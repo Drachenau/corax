@@ -1,0 +1,95 @@
+# Build directories
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+
+# CMake-generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+Testing/
+_deps/
+compile_commands.json
+
+# qmake-generated files
+.qmake.stash
+Makefile
+Makefile.*
+*.pro.user
+*.pro.user.*
+
+# Qt-generated sources and caches
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.moc
+*.qmlc
+*.jsc
+*.qm
+
+# Compiler and linker output
+*.o
+*.obj
+*.lo
+*.a
+*.la
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app/
+*.pdb
+*.dSYM/
+
+# Dependency, coverage, and profiling output
+*.d
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+coverage/
+
+# Runtime and diagnostic files
+core
+core.*
+*.log
+*.pid
+
+# IDE and editor state
+.idea/
+.vscode/
+.vs/
+.qtcreator/
+*.user
+*.suo
+*.swp
+*.swo
+*~
+
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows metadata
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux desktop and trash metadata
+.directory
+.Trash-*/
+.nfs*
