@@ -16,6 +16,7 @@
 #include <QVariant>
 #include <QtQml/qqmlextensionplugin.h>
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -44,6 +45,11 @@ QQuickItem* findVisualItem(QQuickItem* parent, const QString& objectName)
         }
     }
     return nullptr;
+}
+
+bool visualItemExists(QQuickWindow* window, const QString& objectName)
+{
+    return findVisualItem(window->contentItem(), objectName) != nullptr;
 }
 
 class FakeProjectStore final : public corax::application::IProjectStore
@@ -190,7 +196,8 @@ void QmlSmokeTest::mainShellLoadsAndProjectLifecycleIsAsynchronous()
         {QStringLiteral("jobsController"), QVariant::fromValue(&jobsController)},
     });
     engine.loadFromModule(QStringLiteral("Corax.Ui"), QStringLiteral("Main"));
-    QTRY_COMPARE_WITH_TIMEOUT(engine.rootObjects().size(), 1, 3'000);
+    QVERIFY(QTest::qWaitFor([&engine] { return engine.rootObjects().size() == 1; }, 3'000));
+    QCOMPARE(engine.rootObjects().size(), 1);
 
     auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().constFirst());
     QVERIFY(window != nullptr);
@@ -200,7 +207,8 @@ void QmlSmokeTest::mainShellLoadsAndProjectLifecycleIsAsynchronous()
     QSignalSpy opened{&projectController, &corax::presentation::ProjectController::projectOpened};
     projectController.createProject(QUrl::fromLocalFile(projectPath), QStringLiteral("Demo"));
     QVERIFY(projectController.busy());
-    QTRY_COMPARE_WITH_TIMEOUT(opened.size(), 1, 3'000);
+    QVERIFY(QTest::qWaitFor([&opened] { return opened.size() == 1; }, 3'000));
+    QCOMPARE(opened.size(), 1);
     QVERIFY(projectController.hasProject());
     QCOMPARE(projectController.projectName(), QStringLiteral("Demo"));
     QCOMPARE(projectController.projectId(), projectId.toString(QUuid::WithoutBraces));
@@ -208,18 +216,21 @@ void QmlSmokeTest::mainShellLoadsAndProjectLifecycleIsAsynchronous()
 
     QSignalSpy closed{&projectController, &corax::presentation::ProjectController::projectClosed};
     projectController.closeProject();
-    QTRY_COMPARE_WITH_TIMEOUT(closed.size(), 1, 3'000);
+    QVERIFY(QTest::qWaitFor([&closed] { return closed.size() == 1; }, 3'000));
+    QCOMPARE(closed.size(), 1);
     QVERIFY(!projectController.hasProject());
 
     projectController.openProject(QUrl::fromLocalFile(projectPath));
-    QTRY_COMPARE_WITH_TIMEOUT(opened.size(), 2, 3'000);
+    QVERIFY(QTest::qWaitFor([&opened] { return opened.size() == 2; }, 3'000));
+    QCOMPARE(opened.size(), 2);
     QCOMPARE(projectController.projectId(), projectId.toString(QUuid::WithoutBraces));
     QVERIFY(store.operationThread() != QThread::currentThreadId());
     QVERIFY(!store.threadChanged());
 
     const auto fakeJobId = jobsController.startFakeJob();
     QVERIFY(!QUuid::fromString(fakeJobId).isNull());
-    QTRY_VERIFY_WITH_TIMEOUT(jobsController.jobs()->rowCount() > 0, 2'000);
+    QVERIFY(QTest::qWaitFor([&jobsController] { return jobsController.jobs()->rowCount() > 0; },
+                            2'000));
 }
 
 void QmlSmokeTest::rejectedFakeJobSubmissionReturnsEmptyId()
@@ -245,7 +256,7 @@ void QmlSmokeTest::structuredProjectErrorReachesPresentation()
     QSignalSpy errors{&controller, &corax::presentation::ProjectController::errorChanged};
     const auto path = QStringLiteral("/tmp/identity-mismatch.corax");
     controller.openProject(QUrl::fromLocalFile(path));
-    QTRY_VERIFY_WITH_TIMEOUT(controller.hasError(), 3'000);
+    QVERIFY(QTest::qWaitFor([&controller] { return controller.hasError(); }, 3'000));
     QVERIFY(errors.size() >= 1);
     QCOMPARE(controller.errorCode(), QStringLiteral("project.identity_mismatch"));
     QCOMPARE(controller.errorMessage(), QStringLiteral("The project identity does not match."));
@@ -265,7 +276,8 @@ void QmlSmokeTest::dependencyExceptionsReachPresentation()
 
     store.setThrowOpen(true);
     controller.openProject(QUrl::fromLocalFile(QStringLiteral("/tmp/throw-open.corax")));
-    QTRY_VERIFY_WITH_TIMEOUT(controller.hasError() && !controller.busy(), 3'000);
+    QVERIFY(QTest::qWaitFor([&controller] { return controller.hasError() && !controller.busy(); },
+                            3'000));
     QCOMPARE(controller.errorCode(), QStringLiteral("core.internal_error"));
     QCOMPARE(controller.errorMessage(),
              QStringLiteral("Corax could not prepare the project operation."));
@@ -278,7 +290,8 @@ void QmlSmokeTest::dependencyExceptionsReachPresentation()
     store.setThrowClose(true);
     controller.clearError();
     controller.closeProject();
-    QTRY_VERIFY_WITH_TIMEOUT(controller.hasError() && !controller.busy(), 3'000);
+    QVERIFY(QTest::qWaitFor([&controller] { return controller.hasError() && !controller.busy(); },
+                            3'000));
     QCOMPARE(controller.errorCode(), QStringLiteral("core.internal_error"));
     QCOMPARE(controller.errorMessage(),
              QStringLiteral("Corax could not prepare the project operation."));
@@ -302,7 +315,8 @@ void QmlSmokeTest::structuredJobOutcomesReachLoadedQml()
         {QStringLiteral("jobsController"), QVariant::fromValue(&jobsController)},
     });
     engine.loadFromModule(QStringLiteral("Corax.Ui"), QStringLiteral("Main"));
-    QTRY_COMPARE_WITH_TIMEOUT(engine.rootObjects().size(), 1, 3'000);
+    QVERIFY(QTest::qWaitFor([&engine] { return engine.rootObjects().size() == 1; }, 3'000));
+    QCOMPARE(engine.rootObjects().size(), 1);
 
     auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().constFirst());
     QVERIFY(window != nullptr);
@@ -356,17 +370,24 @@ void QmlSmokeTest::structuredJobOutcomesReachLoadedQml()
     QVERIFY(!issueId.isNull());
 
     auto* model = jobsController.jobs();
-    QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), 2, 2'000);
+    QVERIFY(QTest::qWaitFor([model] { return model->rowCount() == 2; }, 2'000));
+    QCOMPARE(model->rowCount(), 2);
     const QModelIndex failureIndex = model->index(0, 0);
-    QTRY_COMPARE_WITH_TIMEOUT(
-        model->data(failureIndex, corax::presentation::JobListModel::StateRole).toString(),
-        QStringLiteral("failed"),
-        2'000);
+    QVERIFY(QTest::qWaitFor(
+        [model, &failureIndex]
+        {
+            return model->data(failureIndex, corax::presentation::JobListModel::StateRole)
+                       .toString() == QStringLiteral("failed");
+        },
+        2'000));
     const QModelIndex issueIndex = model->index(1, 0);
-    QTRY_COMPARE_WITH_TIMEOUT(
-        model->data(issueIndex, corax::presentation::JobListModel::StateRole).toString(),
-        QStringLiteral("succeeded_with_issues"),
-        2'000);
+    QVERIFY(QTest::qWaitFor(
+        [model, &issueIndex]
+        {
+            return model->data(issueIndex, corax::presentation::JobListModel::StateRole)
+                       .toString() == QStringLiteral("succeeded_with_issues");
+        },
+        2'000));
     QCOMPARE(
         model->data(failureIndex, corax::presentation::JobListModel::ErrorMessageRole).toString(),
         failure.userMessage);
@@ -396,16 +417,15 @@ void QmlSmokeTest::structuredJobOutcomesReachLoadedQml()
              issue.affectedObjectId);
     QCOMPARE(presentedIssue.value(QStringLiteral("retryable")).toBool(), issue.retryable);
 
-    QTRY_VERIFY_WITH_TIMEOUT(
-        findVisualItem(window->contentItem(), QStringLiteral("jobFailureMessage")) != nullptr,
-        3'000);
+    QVERIFY(QTest::qWaitFor(
+        std::bind_front(visualItemExists, window, QStringLiteral("jobFailureMessage")), 3'000));
     auto* failureLabel = findVisualItem(window->contentItem(), QStringLiteral("jobFailureMessage"));
     QVERIFY(failureLabel->property("visible").toBool());
     QCOMPARE(failureLabel->property("text").toString(),
              QStringLiteral("The visible test job failed."));
 
-    QTRY_VERIFY_WITH_TIMEOUT(
-        findVisualItem(window->contentItem(), QStringLiteral("jobIssueCount")) != nullptr, 3'000);
+    QVERIFY(QTest::qWaitFor(
+        std::bind_front(visualItemExists, window, QStringLiteral("jobIssueCount")), 3'000));
     auto* issueLabel = findVisualItem(window->contentItem(), QStringLiteral("jobIssueCount"));
     QVERIFY(issueLabel->property("visible").toBool());
     QCOMPARE(issueLabel->property("text").toString(), QStringLiteral("1 issue"));

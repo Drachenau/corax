@@ -17,6 +17,7 @@
 #include <QTest>
 #include <QThread>
 
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -484,18 +485,16 @@ private slots:
             }
         };
 
-        auto firstThread = std::unique_ptr<QThread>(QThread::create(
-            [&]
-            {
-                createWorker(
-                    QString::fromLatin1(kFixtureIdText), QStringLiteral("First"), firstOutcome);
-            }));
-        auto secondThread = std::unique_ptr<QThread>(QThread::create(
-            [&]
-            {
-                createWorker(
-                    QString::fromLatin1(kOtherIdText), QStringLiteral("Second"), secondOutcome);
-            }));
+        auto firstThread =
+            std::unique_ptr<QThread>(QThread::create(createWorker,
+                                                     QString::fromLatin1(kFixtureIdText),
+                                                     QStringLiteral("First"),
+                                                     std::ref(firstOutcome)));
+        auto secondThread =
+            std::unique_ptr<QThread>(QThread::create(createWorker,
+                                                     QString::fromLatin1(kOtherIdText),
+                                                     QStringLiteral("Second"),
+                                                     std::ref(secondOutcome)));
         firstThread->start();
         secondThread->start();
 

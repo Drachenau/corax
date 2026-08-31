@@ -197,7 +197,8 @@ void JobSchedulerTest::fakeJobReportsProgressAndSucceeds()
         scheduler.submit(std::make_unique<corax::jobs::FakeWorkUnitJob>(jobDescriptor, 3, 0ms));
 
     QVERIFY(!id.isNull());
-    QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 2'000);
+    QVERIFY(QTest::qWaitFor([&finished] { return finished.size() == 1; }, 2'000));
+    QCOMPARE(finished.size(), 1);
     const auto snapshot = scheduler.snapshot(id);
     QVERIFY(snapshot.has_value());
     QCOMPARE(snapshot->state, corax::jobs::JobState::Succeeded);
@@ -225,8 +226,10 @@ void JobSchedulerTest::queuedJobCancelsWithoutStarting()
     QCOMPARE(queuedStarted.available(), 0);
 
     blockerRelease.release();
-    QTRY_VERIFY_WITH_TIMEOUT(
-        scheduler.snapshot(blockerId)->state == corax::jobs::JobState::Succeeded, 2'000);
+    QVERIFY(QTest::qWaitFor(
+        [&scheduler, &blockerId]
+        { return scheduler.snapshot(blockerId)->state == corax::jobs::JobState::Succeeded; },
+        2'000));
 }
 
 void JobSchedulerTest::runningJobPublishesCancelRequestedThenCanceled()
@@ -244,8 +247,10 @@ void JobSchedulerTest::runningJobPublishesCancelRequestedThenCanceled()
     QVERIFY(started.tryAcquire(1, 2'000));
     QVERIFY(scheduler.requestCancellation(id));
     QCOMPARE(scheduler.snapshot(id)->state, corax::jobs::JobState::CancelRequested);
-    QTRY_VERIFY_WITH_TIMEOUT(scheduler.snapshot(id)->state == corax::jobs::JobState::Canceled,
-                             2'000);
+    QVERIFY(QTest::qWaitFor(
+        [&scheduler, &id]
+        { return scheduler.snapshot(id)->state == corax::jobs::JobState::Canceled; },
+        2'000));
     QVERIFY(states.contains(corax::jobs::JobState::Running));
     QVERIFY(states.contains(corax::jobs::JobState::CancelRequested));
     QVERIFY(states.contains(corax::jobs::JobState::Canceled));
@@ -275,15 +280,18 @@ void JobSchedulerTest::concurrencyIsBounded()
     QCOMPARE(scheduler.activeCount(), 2);
     release.release(4);
 
-    QTRY_VERIFY_WITH_TIMEOUT(std::ranges::all_of(ids,
-                                                 [&scheduler](const QUuid& id)
-                                                 {
-                                                     const auto snapshot = scheduler.snapshot(id);
-                                                     return snapshot &&
-                                                            snapshot->state ==
-                                                                corax::jobs::JobState::Succeeded;
-                                                 }),
-                             3'000);
+    QVERIFY(QTest::qWaitFor(
+        [&ids, &scheduler]
+        {
+            return std::ranges::all_of(ids,
+                                       [&scheduler](const QUuid& id)
+                                       {
+                                           const auto snapshot = scheduler.snapshot(id);
+                                           return snapshot && snapshot->state ==
+                                                                  corax::jobs::JobState::Succeeded;
+                                       });
+        },
+        3'000));
     QCOMPARE(maximum.load(), 2);
 }
 
@@ -319,7 +327,8 @@ void JobSchedulerTest::queuedPriorityIsRespected()
                  .isNull());
 
     blockerRelease.release();
-    QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 3, 3'000);
+    QVERIFY(QTest::qWaitFor([&finished] { return finished.size() == 3; }, 3'000));
+    QCOMPARE(finished.size(), 3);
     QCOMPARE(order, QStringList({QStringLiteral("blocking"), QStringLiteral("maintenance")}));
 }
 
@@ -347,7 +356,8 @@ void JobSchedulerTest::databaseWriteLaneKeepsThreadAffinity()
                      .isNull());
     }
 
-    QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 2, 3'000);
+    QVERIFY(QTest::qWaitFor([&finished] { return finished.size() == 2; }, 3'000));
+    QCOMPARE(finished.size(), 2);
     QCOMPARE(threads.size(), 2);
     QCOMPARE(threads.at(0), threads.at(1));
     QVERIFY(threads.at(0) != QThread::currentThreadId());
@@ -372,7 +382,8 @@ void JobSchedulerTest::shutdownCancelsCooperativeWorkAndRejectsSubmission()
                 .submit(std::make_unique<corax::jobs::FakeWorkUnitJob>(
                     descriptor(QStringLiteral("rejected")), 1, 0ms))
                 .isNull());
-    QTRY_COMPARE_WITH_TIMEOUT(shutdownFinished.size(), 1, 3'000);
+    QVERIFY(QTest::qWaitFor([&shutdownFinished] { return shutdownFinished.size() == 1; }, 3'000));
+    QCOMPARE(shutdownFinished.size(), 1);
     for (const auto& id : ids)
     {
         QCOMPARE(scheduler.snapshot(id)->state, corax::jobs::JobState::Canceled);
@@ -397,8 +408,10 @@ void JobSchedulerTest::shutdownDeadlineReturnsWithoutDetachingWorker()
 
     release.release();
     QVERIFY(scheduler.waitForShutdown(2s));
-    QTRY_VERIFY_WITH_TIMEOUT(scheduler.snapshot(id)->state == corax::jobs::JobState::Succeeded,
-                             2'000);
+    QVERIFY(QTest::qWaitFor(
+        [&scheduler, &id]
+        { return scheduler.snapshot(id)->state == corax::jobs::JobState::Succeeded; },
+        2'000));
 }
 
 void JobSchedulerTest::noncancellableWorkRequiresDatabaseWriteLane()
@@ -435,7 +448,10 @@ void JobSchedulerTest::failedOutcomeRetainsStructuredFailure()
         { return corax::jobs::JobOutcome::failed(expected); }));
     QVERIFY(!id.isNull());
 
-    QTRY_VERIFY_WITH_TIMEOUT(scheduler.snapshot(id)->state == corax::jobs::JobState::Failed, 2'000);
+    QVERIFY(
+        QTest::qWaitFor([&scheduler, &id]
+                        { return scheduler.snapshot(id)->state == corax::jobs::JobState::Failed; },
+                        2'000));
     const auto snapshot = scheduler.snapshot(id);
     QCOMPARE(snapshot->failure.code, expected.code);
     QCOMPARE(snapshot->failure.userMessage, expected.userMessage);
@@ -461,8 +477,10 @@ void JobSchedulerTest::succeededWithIssuesRetainsStructuredIssues()
         { return corax::jobs::JobOutcome::succeededWithIssues({expected}); }));
     QVERIFY(!id.isNull());
 
-    QTRY_VERIFY_WITH_TIMEOUT(
-        scheduler.snapshot(id)->state == corax::jobs::JobState::SucceededWithIssues, 2'000);
+    QVERIFY(QTest::qWaitFor(
+        [&scheduler, &id]
+        { return scheduler.snapshot(id)->state == corax::jobs::JobState::SucceededWithIssues; },
+        2'000));
     const auto snapshot = scheduler.snapshot(id);
     QCOMPARE(snapshot->progress.issueCount, 1);
     QCOMPARE(snapshot->issues.size(), 1);
@@ -489,7 +507,7 @@ void JobSchedulerTest::completionCallbackRunsOnOwnerThread()
                          })
                  .isNull());
 
-    QTRY_VERIFY_WITH_TIMEOUT(called, 2'000);
+    QVERIFY(QTest::qWaitFor([&called] { return called; }, 2'000));
     QCOMPARE(callbackThread, QCoreApplication::instance()->thread());
 }
 
