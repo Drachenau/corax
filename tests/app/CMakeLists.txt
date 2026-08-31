@@ -28,7 +28,7 @@ corax_enable_warnings(corax_app_integration_tests)
 
 qt_import_qml_plugins(corax_app_integration_tests)
 
-add_test(NAME corax.app.integration COMMAND corax_app_integration_tests)
+add_test(NAME corax.app.integration COMMAND corax_app_integration_tests -o -,txt)
 set_tests_properties(
     corax.app.integration
     PROPERTIES

@@ -64,6 +64,17 @@ QObject* findObjectWithText(QObject* root, const QString& text)
     return nullptr;
 }
 
+QString describeController(const corax::presentation::ProjectController& controller)
+{
+    return QStringLiteral("busy=%1; operation='%2'; hasProject=%3; hasError=%4; errorCode='%5'; "
+                          "technicalContext='%6'")
+        .arg(controller.busy())
+        .arg(controller.currentOperation())
+        .arg(controller.hasProject())
+        .arg(controller.hasError())
+        .arg(controller.errorCode(), controller.errorTechnicalContext());
+}
+
 } // namespace
 
 class AppIntegrationTest final : public QObject
@@ -138,24 +149,29 @@ void AppIntegrationTest::realStorageLifecycleAndIdentityMismatchReachQml()
 
     projectController.createProject(QUrl::fromLocalFile(projectPath),
                                     QStringLiteral("Integration Project"));
-    QVERIFY(QTest::qWaitFor([&projectController, &opened]
-                            { return !projectController.busy() && opened.size() == 1; },
-                            10'000));
+    QVERIFY2(QTest::qWaitFor([&projectController] { return !projectController.busy(); }, 10'000),
+             qPrintable(describeController(projectController)));
+    QVERIFY2(!projectController.hasError(), qPrintable(describeController(projectController)));
+    QCOMPARE(opened.size(), 1);
     QVERIFY(projectController.hasProject());
     QCOMPARE(projectController.projectId(), projectId.toString(QUuid::WithoutBraces));
     QCOMPARE(projectTitle->property("text").toString(), QStringLiteral("Integration Project"));
     QVERIFY(QFile::exists(lockPath));
-    QFile lockFile(lockPath);
-    QVERIFY(lockFile.open(QIODevice::ReadOnly));
-    const QJsonDocument lockDocument = QJsonDocument::fromJson(lockFile.readAll());
+    QJsonDocument lockDocument;
+    {
+        QFile lockFile(lockPath);
+        QVERIFY(lockFile.open(QIODevice::ReadOnly));
+        lockDocument = QJsonDocument::fromJson(lockFile.readAll());
+    }
     QVERIFY(lockDocument.isObject());
     QCOMPARE(lockDocument.object().value(QStringLiteral("applicationVersion")).toString(),
              expectedVersion);
 
     projectController.closeProject();
-    QVERIFY(QTest::qWaitFor([&projectController, &closed]
-                            { return !projectController.busy() && closed.size() == 1; },
-                            10'000));
+    QVERIFY2(QTest::qWaitFor([&projectController] { return !projectController.busy(); }, 10'000),
+             qPrintable(describeController(projectController)));
+    QVERIFY2(!projectController.hasError(), qPrintable(describeController(projectController)));
+    QCOMPARE(closed.size(), 1);
     QVERIFY(!projectController.hasProject());
     QCOMPARE(projectTitle->property("text").toString(), QStringLiteral("No project"));
     QVERIFY(!QFile::exists(lockPath));
@@ -178,16 +194,18 @@ void AppIntegrationTest::realStorageLifecycleAndIdentityMismatchReachQml()
     database.value().reset();
 
     projectController.openProject(QUrl::fromLocalFile(projectPath));
-    QVERIFY(QTest::qWaitFor([&projectController, &opened]
-                            { return !projectController.busy() && opened.size() == 2; },
-                            10'000));
+    QVERIFY2(QTest::qWaitFor([&projectController] { return !projectController.busy(); }, 10'000),
+             qPrintable(describeController(projectController)));
+    QVERIFY2(!projectController.hasError(), qPrintable(describeController(projectController)));
+    QCOMPARE(opened.size(), 2);
     QCOMPARE(projectController.projectId(), projectId.toString(QUuid::WithoutBraces));
     QCOMPARE(projectTitle->property("text").toString(), QStringLiteral("Integration Project"));
 
     projectController.closeProject();
-    QVERIFY(QTest::qWaitFor([&projectController, &closed]
-                            { return !projectController.busy() && closed.size() == 2; },
-                            10'000));
+    QVERIFY2(QTest::qWaitFor([&projectController] { return !projectController.busy(); }, 10'000),
+             qPrintable(describeController(projectController)));
+    QVERIFY2(!projectController.hasError(), qPrintable(describeController(projectController)));
+    QCOMPARE(closed.size(), 2);
     QVERIFY(!QFile::exists(lockPath));
 
     persistedManifest.value().projectId = mismatchedId;
@@ -196,9 +214,9 @@ void AppIntegrationTest::realStorageLifecycleAndIdentityMismatchReachQml()
              qPrintable(manifestWritten ? QString{} : manifestWritten.error().technicalContext));
 
     projectController.openProject(QUrl::fromLocalFile(projectPath));
-    QVERIFY(QTest::qWaitFor([&projectController]
-                            { return !projectController.busy() && projectController.hasError(); },
-                            10'000));
+    QVERIFY2(QTest::qWaitFor([&projectController] { return !projectController.busy(); }, 10'000),
+             qPrintable(describeController(projectController)));
+    QVERIFY2(projectController.hasError(), qPrintable(describeController(projectController)));
     QVERIFY(!projectController.hasProject());
     QCOMPARE(projectController.errorCode(), QStringLiteral("project.identity_mismatch"));
     QCOMPARE(projectController.errorMessage(),
