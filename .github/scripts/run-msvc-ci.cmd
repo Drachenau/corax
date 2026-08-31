@@ -16,10 +16,21 @@ exit /b 1
 
 :vswhere_found
 set "CORAX_VS_INSTALL="
-for /f "usebackq delims=" %%I in (`"%CORAX_VSWHERE%" -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "CORAX_VS_INSTALL=%%I"
+rem Run vswhere directly because FOR /F command parsing can strip quotes from Program Files paths.
+set "CORAX_VS_QUERY=%TEMP%\corax-vswhere-%RANDOM%-%RANDOM%.txt"
+"%CORAX_VSWHERE%" -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath > "%CORAX_VS_QUERY%"
+set "CORAX_EXIT=%ERRORLEVEL%"
+if not "%CORAX_EXIT%"=="0" goto vswhere_query_failed
+set /p "CORAX_VS_INSTALL="<"%CORAX_VS_QUERY%"
+del /q "%CORAX_VS_QUERY%" >nul 2>&1
 if defined CORAX_VS_INSTALL goto vs_install_found
 echo ::error::Visual Studio 2022 with the x64 C++ tools was not found.
 exit /b 1
+
+:vswhere_query_failed
+del /q "%CORAX_VS_QUERY%" >nul 2>&1
+echo ::error::vswhere.exe failed with exit code %CORAX_EXIT%.
+exit /b %CORAX_EXIT%
 
 :vs_install_found
 set "CORAX_VSDEVCMD=%CORAX_VS_INSTALL%\Common7\Tools\VsDevCmd.bat"
