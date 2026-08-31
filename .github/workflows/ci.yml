@@ -105,6 +105,19 @@ jobs:
         if: runner.os != 'Windows'
         run: cmake --build --preset ${{ matrix.preset }}
 
+      - name: Verify macOS deployment target and bundle identity
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          grep -Fx "CMAKE_OSX_DEPLOYMENT_TARGET:STRING=12.0" "build/${{ matrix.preset }}/CMakeCache.txt"
+          bundle="build/${{ matrix.preset }}/src/app/corax.app"
+          identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$bundle/Contents/Info.plist")"
+          printf 'CFBundleIdentifier: %s\n' "$identifier"
+          test "$identifier" = "com.drachenau.corax"
+          build_info="$(xcrun vtool -show-build "$bundle/Contents/MacOS/corax")"
+          printf '%s\n' "$build_info"
+          grep -Eq 'minos[[:space:]]+12\.0' <<<"$build_info"
+
       - name: Test
         if: runner.os != 'Windows'
         run: ctest --preset ${{ matrix.preset }}

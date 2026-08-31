@@ -2,6 +2,8 @@
 
 #include "corax/storage_sqlite/SqliteProjectDatabase.h"
 
+#include <corax/build/BuildConfiguration.h>
+
 #include "corax/domain/AppError.h"
 
 #include "sqlite3.h"
@@ -21,7 +23,6 @@ namespace
 {
 
 constexpr auto kInitialMigrationId = "0001_empty_project";
-constexpr auto kApplicationVersion = "0.1.0";
 
 constexpr auto kInitialMigrationSql = R"sql(
 CREATE TABLE schema_migrations (
@@ -536,7 +537,7 @@ domain::Result<void> insertInitialMetadata(Connection& connection,
         project.projectId.toString(QUuid::WithoutBraces),
         project.displayName,
         createdAt,
-        QString::fromLatin1(kApplicationVersion),
+        QString::fromLatin1(build::kApplicationVersion),
     };
     for (int index = 0; index < static_cast<int>(values.size()); ++index)
     {
@@ -575,7 +576,7 @@ domain::Result<void> insertInitialMigrationRecord(Connection& connection,
     const std::array values{
         QString::fromLatin1(kInitialMigrationId),
         checksumForInitialMigration(),
-        QString::fromLatin1(kApplicationVersion),
+        QString::fromLatin1(build::kApplicationVersion),
         timestamp.toUTC().toString(Qt::ISODateWithMs),
     };
     for (int index = 0; index < static_cast<int>(values.size()); ++index)

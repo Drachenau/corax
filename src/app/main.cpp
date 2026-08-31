@@ -21,11 +21,7 @@ Q_IMPORT_QML_PLUGIN(Corax_UiPlugin)
 
 int main(int argc, char* argv[])
 {
-    QCoreApplication::setApplicationName(corax::platform::ApplicationIdentity::displayName());
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
-    QCoreApplication::setOrganizationName(corax::platform::ApplicationIdentity::organizationName());
-    QCoreApplication::setOrganizationDomain(
-        corax::platform::ApplicationIdentity::organizationDomain());
+    corax::platform::ApplicationIdentity::applyToQt();
 
     QGuiApplication application(argc, argv);
     corax::ui::configureQuickControls();
@@ -38,19 +34,32 @@ int main(int argc, char* argv[])
     corax::presentation::JobsController jobsController{jobScheduler};
 
     QQmlApplicationEngine engine;
-    QObject::connect(
-        &engine,
-        &QQmlApplicationEngine::objectCreationFailed,
-        &application,
-        [] { QCoreApplication::exit(EXIT_FAILURE); },
-        Qt::QueuedConnection);
+    bool rootCreationFailed = false;
+    QObject::connect(&engine,
+                     &QQmlApplicationEngine::objectCreationFailed,
+                     &application,
+                     [&rootCreationFailed]
+                     {
+                         rootCreationFailed = true;
+                         QCoreApplication::exit(EXIT_FAILURE);
+                     });
     engine.setInitialProperties({
         {QStringLiteral("projectController"), QVariant::fromValue(&projectController)},
         {QStringLiteral("jobsController"), QVariant::fromValue(&jobsController)},
     });
-    engine.loadFromModule(QStringLiteral("Corax.Ui"), QStringLiteral("Main"));
+    const bool smokeTest = qEnvironmentVariableIsSet("CORAX_SMOKE_TEST");
+    const bool forceQmlFailure =
+        smokeTest && qEnvironmentVariableIsSet("CORAX_SMOKE_TEST_FORCE_QML_FAILURE");
+    engine.loadFromModule(QStringLiteral("Corax.Ui"),
+                          forceQmlFailure ? QStringLiteral("MissingSmokeRoot")
+                                          : QStringLiteral("Main"));
 
-    if (qEnvironmentVariableIsSet("CORAX_SMOKE_TEST"))
+    if (rootCreationFailed || engine.rootObjects().isEmpty())
+    {
+        return EXIT_FAILURE;
+    }
+
+    if (smokeTest)
     {
         QTimer::singleShot(250, &application, &QCoreApplication::quit);
     }

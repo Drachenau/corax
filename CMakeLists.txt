@@ -1,11 +1,49 @@
 cmake_minimum_required(VERSION 3.28)
 
+if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(
+        CMAKE_OSX_DEPLOYMENT_TARGET
+        "12.0"
+        CACHE STRING "Minimum macOS version supported by Corax"
+    )
+endif()
+
 project(
     Corax
     VERSION 0.1.0
     DESCRIPTION "A native workspace for curating image-training datasets"
     LANGUAGES C CXX
 )
+
+set(CORAX_APPLICATION_DISPLAY_NAME "Corax")
+set(CORAX_ORGANIZATION_NAME "Drachenau")
+set(CORAX_ORGANIZATION_DOMAIN "drachenau.com")
+set(CORAX_APPLICATION_IDENTIFIER "com.drachenau.corax")
+
+set(corax_generated_include_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
+configure_file(
+    cmake/templates/BuildConfiguration.h.in
+    "${corax_generated_include_dir}/corax/build/BuildConfiguration.h"
+    @ONLY
+)
+
+add_library(corax_build_config INTERFACE)
+target_include_directories(
+    corax_build_config
+    INTERFACE "$<BUILD_INTERFACE:${corax_generated_include_dir}>"
+)
+add_library(Corax::BuildConfig ALIAS corax_build_config)
+
+if(APPLE)
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET STREQUAL "12.0")
+        message(
+            FATAL_ERROR
+            "Corax macOS builds require CMAKE_OSX_DEPLOYMENT_TARGET=12.0; "
+            "got '${CMAKE_OSX_DEPLOYMENT_TARGET}'"
+        )
+    endif()
+    message(STATUS "Corax macOS deployment target: ${CMAKE_OSX_DEPLOYMENT_TARGET}")
+endif()
 
 include(CTest)
 
@@ -59,7 +97,7 @@ corax_assert_corax_dependencies(
 )
 corax_assert_corax_dependencies(
     corax_storage_sqlite
-    ALLOWED corax_application corax_domain corax_sqlite
+    ALLOWED corax_application corax_build_config corax_domain corax_sqlite
     ALLOWED_QT Core
 )
 corax_assert_corax_dependencies(
@@ -82,13 +120,14 @@ corax_assert_corax_dependencies(
 )
 corax_assert_corax_dependencies(
     corax_platform
-    ALLOWED corax_application corax_domain
+    ALLOWED corax_application corax_build_config corax_domain
     ALLOWED_QT Core
 )
 corax_assert_corax_dependencies(
     corax_app
     ALLOWED
         corax_application
+        corax_build_config
         corax_jobs
         corax_platform
         corax_presentation

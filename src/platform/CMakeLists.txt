@@ -9,5 +9,9 @@ target_sources(
         BASE_DIRS include
         FILES include/corax/platform/ApplicationIdentity.h
 )
-target_link_libraries(corax_platform PUBLIC Qt6::Core)
+target_link_libraries(
+    corax_platform
+    PUBLIC Qt6::Core
+    PRIVATE Corax::BuildConfig
+)
 corax_enable_warnings(corax_platform)
