@@ -1,0 +1,178 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os-name }} / ${{ matrix.preset }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os-name: Linux GCC 13
+            runner: ubuntu-24.04
+            qt-arch: linux_gcc_64
+            preset: ci-debug
+          - os-name: Linux GCC 13
+            runner: ubuntu-24.04
+            qt-arch: linux_gcc_64
+            preset: ci-release
+          - os-name: Windows MSVC 2022
+            runner: windows-2022
+            qt-arch: win64_msvc2022_64
+            preset: ci-debug
+          - os-name: Windows MSVC 2022
+            runner: windows-2022
+            qt-arch: win64_msvc2022_64
+            preset: ci-release
+          - os-name: macOS 15 Intel / Xcode 16.4
+            runner: macos-15-intel
+            qt-arch: clang_64
+            preset: ci-debug
+            osx-arch: x86_64
+          - os-name: macOS 15 arm64 / Xcode 16.4
+            runner: macos-15
+            qt-arch: clang_64
+            preset: ci-release
+            osx-arch: arm64
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install pinned CMake and Ninja
+        uses: lukka/get-cmake@fffaaafeea488556c2c12dad60690008bc1caacb
+        with:
+          cmakeVersion: 3.28.6
+          ninjaVersion: 1.12.1
+
+      - name: Enable MSVC 2022
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: x64
+
+      - name: Select GCC 13
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-13 g++-13
+          echo "CC=gcc-13" >> "$GITHUB_ENV"
+          echo "CXX=g++-13" >> "$GITHUB_ENV"
+
+      - name: Select Xcode 16.4
+        if: runner.os == 'macOS'
+        run: sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
+
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730
+        with:
+          version: 6.8.3
+          arch: ${{ matrix.qt-arch }}
+          cache: true
+
+      - name: Report Linux toolchain
+        if: runner.os == 'Linux'
+        run: |
+          cmake --version
+          "$CC" --version
+          "$CXX" --version
+          qmake -query QT_VERSION
+
+      - name: Report Windows toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake --version
+          cl
+          qmake -query QT_VERSION
+
+      - name: Report macOS toolchain
+        if: runner.os == 'macOS'
+        run: |
+          cmake --version
+          xcodebuild -version
+          clang++ --version
+          uname -m
+          qmake -query QT_VERSION
+
+      - name: Configure
+        if: runner.os != 'macOS'
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Configure macOS architecture
+        if: runner.os == 'macOS'
+        run: cmake --preset ${{ matrix.preset }} -DCMAKE_OSX_ARCHITECTURES="${{ matrix.osx-arch }}"
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+  quality:
+    name: Formatting, QML lint, architecture, static analysis
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install pinned CMake and Ninja
+        uses: lukka/get-cmake@fffaaafeea488556c2c12dad60690008bc1caacb
+        with:
+          cmakeVersion: 3.28.6
+          ninjaVersion: 1.12.1
+
+      - name: Install analysis tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang-18 clang-format-18 clang-tidy-18
+
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730
+        with:
+          version: 6.8.3
+          arch: linux_gcc_64
+          cache: true
+
+      - name: Configure
+        run: >-
+          cmake --preset analysis
+          -DCMAKE_C_COMPILER=clang-18
+          -DCMAKE_CXX_COMPILER=clang++-18
+
+      - name: Build for analysis
+        run: cmake --build --preset analysis
+
+      - name: Report analysis toolchain
+        run: |
+          clang-18 --version
+          clang-format-18 --version
+          clang-tidy-18 --version
+
+      - name: Check C++ formatting
+        run: cmake --build --preset analysis --target format-check
+
+      - name: Check QML formatting
+        run: cmake --build --preset analysis --target qml-format-check
+
+      - name: Lint QML
+        run: cmake --build --preset analysis --target qml-lint
+
+      - name: Check architectural boundaries
+        run: cmake --build --preset analysis --target architecture-check
+
+      - name: Run clang-tidy
+        run: cmake --build --preset analysis --target analyze
