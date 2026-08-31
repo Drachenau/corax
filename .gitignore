@@ -15,6 +15,9 @@ _deps/
 compile_commands.json
 /CMakeUserPresets.json
 
+# Repository-external planning material
+/docs/
+
 # qmake-generated files
 .qmake.stash
 Makefile
