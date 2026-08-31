@@ -9,6 +9,14 @@ Checks: >
   performance-move-const-arg,
   performance-unnecessary-copy-initialization,
   portability-std-allocator-const
-WarningsAsErrors: '*'
+# Clang 18 produces false positives when it analyzes Qt 6.8 queued callables,
+# QPointer reference counting, and a moved AppError held by std::variant. Keep
+# these checks enabled and reported, but do not promote these diagnostics to
+# errors. All other enabled checks remain errors.
+WarningsAsErrors: >
+  *,
+  -clang-analyzer-core.uninitialized.Assign,
+  -clang-analyzer-cplusplus.NewDelete,
+  -clang-analyzer-cplusplus.NewDeleteLeaks
 HeaderFilterRegex: '^(?!.*third_party/).*/(src|tests)/.*'
 SystemHeaders: false
