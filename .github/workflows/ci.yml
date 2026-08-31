@@ -48,19 +48,13 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Install pinned CMake and Ninja
         uses: lukka/get-cmake@fffaaafeea488556c2c12dad60690008bc1caacb
         with:
           cmakeVersion: 3.28.6
           ninjaVersion: 1.12.1
-
-      - name: Enable MSVC 2022
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
-        with:
-          arch: x64
 
       - name: Select GCC 13
         if: runner.os == 'Linux'
@@ -90,14 +84,6 @@ jobs:
           "$CXX" --version
           qmake -query QT_VERSION
 
-      - name: Report Windows toolchain
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cmake --version
-          cl
-          qmake -query QT_VERSION
-
       - name: Report macOS toolchain
         if: runner.os == 'macOS'
         run: |
@@ -108,7 +94,7 @@ jobs:
           qmake -query QT_VERSION
 
       - name: Configure
-        if: runner.os != 'macOS'
+        if: runner.os == 'Linux'
         run: cmake --preset ${{ matrix.preset }}
 
       - name: Configure macOS architecture
@@ -116,10 +102,17 @@ jobs:
         run: cmake --preset ${{ matrix.preset }} -DCMAKE_OSX_ARCHITECTURES="${{ matrix.osx-arch }}"
 
       - name: Build
+        if: runner.os != 'Windows'
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
+        if: runner.os != 'Windows'
         run: ctest --preset ${{ matrix.preset }}
+
+      - name: Configure, build, and test with MSVC 2022
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: .github\scripts\run-msvc-ci.cmd ${{ matrix.preset }}
 
   quality:
     name: Formatting, QML lint, architecture, static analysis
@@ -127,7 +120,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Install pinned CMake and Ninja
         uses: lukka/get-cmake@fffaaafeea488556c2c12dad60690008bc1caacb
