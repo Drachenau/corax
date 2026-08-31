@@ -4,6 +4,7 @@
 #include <corax/presentation/JobsController.h>
 #include <corax/presentation/ProjectController.h>
 #include <corax/storage_sqlite/SqliteProjectStore.h>
+#include <corax/ui/UiConfiguration.h>
 
 #include <QCoreApplication>
 #include <QGuiApplication>
@@ -27,6 +28,7 @@ int main(int argc, char* argv[])
         corax::platform::ApplicationIdentity::organizationDomain());
 
     QGuiApplication application(argc, argv);
+    corax::ui::configureQuickControls();
 
     corax::storage_sqlite::SqliteProjectStore projectStore;
     corax::application::ProjectService projectService{projectStore};

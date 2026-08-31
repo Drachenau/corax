@@ -19,4 +19,8 @@ corax_enable_warnings(corax_qml_smoke_tests)
 qt_import_qml_plugins(corax_qml_smoke_tests)
 
 add_test(NAME corax_qml_smoke_tests COMMAND corax_qml_smoke_tests)
-set_tests_properties(corax_qml_smoke_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+set_tests_properties(
+    corax_qml_smoke_tests
+    PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_CONTROLS_STYLE=Basic"
+)

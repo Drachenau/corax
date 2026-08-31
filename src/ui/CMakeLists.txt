@@ -19,6 +19,16 @@ qt_add_qml_module(
         qml/design/DesignTokens.qml
 )
 
+target_sources(
+    corax_ui
+    PRIVATE
+        src/UiConfiguration.cpp
+    PUBLIC
+        FILE_SET HEADERS
+        BASE_DIRS include
+        FILES include/corax/ui/UiConfiguration.h
+)
+
 target_link_libraries(
     corax_ui
     PUBLIC
