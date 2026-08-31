@@ -1,0 +1,6 @@
+* text=auto
+
+# Vendored source hashes are verified during CMake configuration. Keep their
+# bytes stable when Git checks the repository out on Windows.
+third_party/sqlite/sqlite3.c text eol=lf
+third_party/sqlite/sqlite3.h text eol=lf
