@@ -163,6 +163,7 @@ class QmlSmokeTest final : public QObject
 
 private slots:
     void mainShellLoadsAndProjectLifecycleIsAsynchronous();
+    void rejectedFakeJobSubmissionReturnsEmptyId();
     void structuredProjectErrorReachesPresentation();
     void dependencyExceptionsReachPresentation();
     void structuredJobOutcomesReachLoadedQml();
@@ -217,8 +218,20 @@ void QmlSmokeTest::mainShellLoadsAndProjectLifecycleIsAsynchronous()
     QVERIFY(!store.threadChanged());
 
     const auto fakeJobId = jobsController.startFakeJob();
-    QVERIFY(!fakeJobId.isEmpty());
+    QVERIFY(!QUuid::fromString(fakeJobId).isNull());
     QTRY_VERIFY_WITH_TIMEOUT(jobsController.jobs()->rowCount() > 0, 2'000);
+}
+
+void QmlSmokeTest::rejectedFakeJobSubmissionReturnsEmptyId()
+{
+    corax::jobs::JobScheduler scheduler{1};
+    corax::presentation::JobsController jobsController{scheduler};
+
+    scheduler.beginShutdown();
+
+    QVERIFY(!jobsController.acceptingWork());
+    QCOMPARE(jobsController.startFakeJob(), QString{});
+    QCOMPARE(jobsController.jobs()->rowCount(), 0);
 }
 
 void QmlSmokeTest::structuredProjectErrorReachesPresentation()

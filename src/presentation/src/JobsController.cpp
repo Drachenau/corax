@@ -47,7 +47,7 @@ QString JobsController::startFakeJob()
 
     const auto id =
         scheduler_.submit(std::make_unique<jobs::FakeWorkUnitJob>(std::move(descriptor), 40, 35ms));
-    return id.toString(QUuid::WithoutBraces);
+    return id.isNull() ? QString{} : id.toString(QUuid::WithoutBraces);
 }
 
 bool JobsController::cancelJob(const QString& jobId)
