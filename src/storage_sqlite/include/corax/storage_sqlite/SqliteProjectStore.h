@@ -14,12 +14,14 @@ namespace corax::storage_sqlite
 class SqliteProjectStore final : public application::IProjectStore
 {
 public:
-    // Test synchronization seam. Production composition leaves this empty.
-    using InitialMissingPathCheckpoint = std::function<void()>;
+    // Test synchronization seam after the initial path check and before this
+    // operation creates or locks the project directory. Production composition
+    // leaves this empty.
+    using InitialPathCheckpoint = std::function<void()>;
 
     explicit SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manifestWriter = {});
     SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manifestWriter,
-                       InitialMissingPathCheckpoint initialMissingPathCheckpoint);
+                       InitialPathCheckpoint initialPathCheckpoint);
     ~SqliteProjectStore() override;
 
     SqliteProjectStore(const SqliteProjectStore&) = delete;

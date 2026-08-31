@@ -80,17 +80,15 @@ void removeOwnedProjectArtifacts(const QString& rootPath)
 class SqliteProjectStore::Impl final
 {
 public:
-    Impl(std::shared_ptr<IAtomicFileWriter> writer,
-         InitialMissingPathCheckpoint missingPathCheckpoint)
-        : manifests(std::move(writer)),
-          initialMissingPathCheckpoint(std::move(missingPathCheckpoint))
+    Impl(std::shared_ptr<IAtomicFileWriter> writer, InitialPathCheckpoint pathCheckpoint)
+        : manifests(std::move(writer)), initialPathCheckpoint(std::move(pathCheckpoint))
     {
     }
 
     ManifestStore manifests;
     ProjectWriterLock writerLock;
     std::optional<domain::ProjectInfo> current;
-    InitialMissingPathCheckpoint initialMissingPathCheckpoint;
+    InitialPathCheckpoint initialPathCheckpoint;
 };
 
 SqliteProjectStore::SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manifestWriter)
@@ -99,9 +97,8 @@ SqliteProjectStore::SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manife
 }
 
 SqliteProjectStore::SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manifestWriter,
-                                       InitialMissingPathCheckpoint initialMissingPathCheckpoint)
-    : impl_(std::make_unique<Impl>(std::move(manifestWriter),
-                                   std::move(initialMissingPathCheckpoint)))
+                                       InitialPathCheckpoint initialPathCheckpoint)
+    : impl_(std::make_unique<Impl>(std::move(manifestWriter), std::move(initialPathCheckpoint)))
 {
 }
 
@@ -146,11 +143,6 @@ SqliteProjectStore::createProject(const application::NewProject& project)
                          QStringLiteral("Choose a new or empty ordinary directory.")));
     }
 
-    if (!rootInitiallyExisted && impl_->initialMissingPathCheckpoint)
-    {
-        impl_->initialMissingPathCheckpoint();
-    }
-
     if (rootInitiallyExisted)
     {
         const QDir existing(rootPath);
@@ -166,7 +158,13 @@ SqliteProjectStore::createProject(const application::NewProject& project)
                 QStringLiteral("Choose a new or empty directory.")));
         }
     }
-    else
+
+    if (impl_->initialPathCheckpoint)
+    {
+        impl_->initialPathCheckpoint();
+    }
+
+    if (!rootInitiallyExisted)
     {
         QDir parent = rootInfo.dir();
         if ((!parent.exists() && !QDir().mkpath(parent.absolutePath())) ||
@@ -208,7 +206,6 @@ SqliteProjectStore::createProject(const application::NewProject& project)
                     { return entry.fileName() != QString::fromLatin1(kWriterLockFileName); });
     if (hasUnexpectedEntry)
     {
-        removeOwnedProjectArtifacts(rootPath);
         static_cast<void>(impl_->writerLock.release());
         return domain::Result<domain::ProjectInfo>::failure(projectError(
             domain::ErrorCode::ProjectAlreadyExists,

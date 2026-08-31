@@ -566,6 +566,63 @@ private slots:
         QVERIFY(winnerClosed->hasValue());
     }
 
+    void existingEmptyDirectoryRacePreservesCompletedProject()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        QDir parent(temporaryDirectory.path());
+        QVERIFY(parent.mkdir(QStringLiteral("ExistingRace.corax")));
+        const QString projectPath = parent.filePath(QStringLiteral("ExistingRace.corax"));
+
+        SqliteProjectStore winnerStore;
+        ProjectService winner(
+            winnerStore,
+            [] { return QUuid(QString::fromLatin1(kFixtureIdText)); },
+            [] { return fixtureTime(); });
+        std::optional<Result<ProjectInfo>> winnerCreated;
+        std::optional<Result<void>> winnerClosed;
+
+        SqliteProjectStore loserStore({},
+                                      [&]
+                                      {
+                                          winnerCreated.emplace(winner.createProject(
+                                              projectPath, QStringLiteral("Race Winner")));
+                                          if (winnerCreated->hasValue())
+                                          {
+                                              winnerClosed.emplace(winner.closeProject());
+                                          }
+                                      });
+        ProjectService loser(
+            loserStore,
+            [] { return QUuid(QString::fromLatin1(kOtherIdText)); },
+            [] { return fixtureTime(); });
+
+        auto rejected = loser.createProject(projectPath, QStringLiteral("Race Loser"));
+
+        QVERIFY(winnerCreated.has_value());
+        QVERIFY2(winnerCreated->hasValue(),
+                 qPrintable(winnerCreated->hasValue() ? QString{}
+                                                      : winnerCreated->error().technicalContext));
+        QVERIFY(winnerClosed.has_value());
+        QVERIFY(winnerClosed->hasValue());
+        QVERIFY(!rejected);
+        QCOMPARE(rejected.error().stableCode(), QStringLiteral("project.already_exists"));
+
+        const QDir projectDirectory(projectPath);
+        QVERIFY(QFile::exists(projectDirectory.filePath(QStringLiteral("corax.project.json"))));
+        QVERIFY(QFile::exists(projectDirectory.filePath(QStringLiteral("project.sqlite3"))));
+        QVERIFY(!QFile::exists(projectDirectory.filePath(QStringLiteral(".corax.writer.lock"))));
+        QVERIFY(QDir(projectDirectory.filePath(QStringLiteral("managed/originals"))).exists());
+
+        SqliteProjectStore verifierStore;
+        ProjectService verifier(verifierStore);
+        auto reopened = verifier.openProject(projectPath);
+        QVERIFY2(reopened, qPrintable(reopened ? QString{} : reopened.error().technicalContext));
+        QCOMPARE(reopened.value().projectId, QUuid(QString::fromLatin1(kFixtureIdText)));
+        QCOMPARE(reopened.value().displayName, QStringLiteral("Race Winner"));
+        QVERIFY(verifier.closeProject());
+    }
+
     void manifestAndDatabaseIdentityMismatchIsRejected()
     {
         QTemporaryDir temporaryDirectory;
