@@ -29,6 +29,7 @@ public:
     openProject(const QString& projectDirectory) = 0;
     [[nodiscard]] virtual domain::Result<void> closeProject() = 0;
     [[nodiscard]] virtual std::optional<domain::ProjectInfo> currentProject() const = 0;
+    [[nodiscard]] virtual bool recoveryRequired() const noexcept = 0;
 };
 
 } // namespace corax::application

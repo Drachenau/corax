@@ -63,6 +63,11 @@ public:
         return current;
     }
 
+    bool recoveryRequired() const noexcept override
+    {
+        return false;
+    }
+
     int createCalls{0};
     int openCalls{0};
     int closeCalls{0};

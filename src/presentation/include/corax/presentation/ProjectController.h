@@ -5,7 +5,11 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringView>
 #include <QUrl>
+
+#include <functional>
+#include <optional>
 
 namespace corax::presentation
 {
@@ -20,6 +24,7 @@ class ProjectController final : public QObject
     Q_PROPERTY(qint64 projectRevision READ projectRevision NOTIFY projectChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(QString currentOperation READ currentOperation NOTIFY busyChanged)
+    Q_PROPERTY(bool recoveryRequired READ recoveryRequired NOTIFY recoveryRequiredChanged)
     Q_PROPERTY(bool hasError READ hasError NOTIFY errorChanged)
     Q_PROPERTY(QString errorCode READ errorCode NOTIFY errorChanged)
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorChanged)
@@ -40,6 +45,7 @@ public:
     [[nodiscard]] qint64 projectRevision() const noexcept;
     [[nodiscard]] bool busy() const noexcept;
     [[nodiscard]] QString currentOperation() const;
+    [[nodiscard]] bool recoveryRequired() const noexcept;
 
     [[nodiscard]] bool hasError() const noexcept;
     [[nodiscard]] QString errorCode() const;
@@ -57,16 +63,34 @@ public:
 signals:
     void projectChanged();
     void busyChanged();
+    void recoveryRequiredChanged();
     void errorChanged();
     void projectOpened();
     void projectClosed();
 
 private:
+    enum class CompletionAction
+    {
+        ApplyProject,
+        ClearProject,
+    };
+
+    using WorkerEntryHook = std::function<void(QStringView)>;
+
     [[nodiscard]] QString localPathFromUrl(const QUrl& url);
     [[nodiscard]] bool beginOperation(QString operation);
+    [[nodiscard]] bool rejectIfRecoveryRequired();
     void endOperation();
+    void completeOperation(const jobs::JobSnapshot& snapshot,
+                           const std::optional<domain::ProjectInfo>& project,
+                           const std::optional<domain::AppError>& error,
+                           bool closed,
+                           const QString& affectedPath,
+                           const std::optional<bool>& recoveryRequired,
+                           CompletionAction action);
     void applyProject(const domain::ProjectInfo& project);
     void clearProject();
+    void setRecoveryRequired(bool required);
     void applyError(const domain::AppError& error);
     void applySubmissionError();
 
@@ -75,8 +99,12 @@ private:
     std::optional<domain::ProjectInfo> project_;
     QString currentOperation_;
     domain::AppError error_;
+    WorkerEntryHook workerEntryHook_;
     bool busy_{false};
+    bool recoveryRequired_{false};
     bool hasError_{false};
+
+    friend class ProjectControllerTestAccess;
 };
 
 } // namespace corax::presentation

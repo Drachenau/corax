@@ -75,6 +75,41 @@ void removeOwnedProjectArtifacts(const QString& rootPath)
     }
 }
 
+domain::AppError lockReleaseFailure(domain::AppError operationError, domain::AppError lockError)
+{
+    lockError.technicalContext =
+        QStringLiteral("%1 Writer-lock release failed after project failure %2: %3")
+            .arg(lockError.technicalContext,
+                 operationError.stableCode(),
+                 operationError.technicalContext);
+    return lockError;
+}
+
+domain::Result<domain::ProjectInfo> projectFailureAfterLockRelease(ProjectWriterLock& writerLock,
+                                                                   domain::AppError operationError)
+{
+    auto released = writerLock.release();
+    if (!released)
+    {
+        return domain::Result<domain::ProjectInfo>::failure(
+            lockReleaseFailure(std::move(operationError), std::move(released).error()));
+    }
+    return domain::Result<domain::ProjectInfo>::failure(std::move(operationError));
+}
+
+domain::Result<domain::ProjectInfo> projectFailureAfterLockReleaseAndCleanup(
+    ProjectWriterLock& writerLock, const QString& rootPath, domain::AppError operationError)
+{
+    auto released = writerLock.release();
+    if (!released)
+    {
+        return domain::Result<domain::ProjectInfo>::failure(
+            lockReleaseFailure(std::move(operationError), std::move(released).error()));
+    }
+    removeOwnedProjectArtifacts(rootPath);
+    return domain::Result<domain::ProjectInfo>::failure(std::move(operationError));
+}
+
 } // namespace
 
 class SqliteProjectStore::Impl final
@@ -104,12 +139,20 @@ SqliteProjectStore::SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manife
 
 SqliteProjectStore::~SqliteProjectStore()
 {
-    static_cast<void>(closeProject());
+    const auto closed = closeProject();
+    if (!closed)
+    {
+        impl_->writerLock.abandon();
+    }
 }
 
 domain::Result<domain::ProjectInfo>
 SqliteProjectStore::createProject(const application::NewProject& project)
 {
+    if (const auto recoveryError = impl_->writerLock.recoveryError())
+    {
+        return domain::Result<domain::ProjectInfo>::failure(*recoveryError);
+    }
     if (impl_->current.has_value())
     {
         return domain::Result<domain::ProjectInfo>::failure(
@@ -118,6 +161,16 @@ SqliteProjectStore::createProject(const application::NewProject& project)
                          QStringLiteral("SqliteProjectStore already has an open project."),
                          impl_->current->projectPath,
                          QStringLiteral("Close the current project and try again.")));
+    }
+    if (impl_->writerLock.ownsLock())
+    {
+        return domain::Result<domain::ProjectInfo>::failure(projectError(
+            domain::ErrorCode::ProjectLockFailed,
+            QStringLiteral("Corax must finish releasing its previous writer lock."),
+            QStringLiteral("A previous failed project operation still owns a writer lock."),
+            impl_->writerLock.lockPath(),
+            QStringLiteral("Retry closing the project or restart Corax before continuing."),
+            true));
     }
     if (project.projectId.isNull() || project.displayName.trimmed().isEmpty() ||
         !project.createdAtUtc.isValid())
@@ -206,15 +259,16 @@ SqliteProjectStore::createProject(const application::NewProject& project)
                     { return entry.fileName() != QString::fromLatin1(kWriterLockFileName); });
     if (hasUnexpectedEntry)
     {
-        static_cast<void>(impl_->writerLock.release());
-        return domain::Result<domain::ProjectInfo>::failure(projectError(
-            domain::ErrorCode::ProjectAlreadyExists,
-            QStringLiteral("The selected project directory changed during creation."),
-            QStringLiteral(
-                "An unexpected directory entry appeared before Corax initialized the project."),
-            rootPath,
-            QStringLiteral("Choose a new or empty directory and try again."),
-            true));
+        return projectFailureAfterLockRelease(
+            impl_->writerLock,
+            projectError(
+                domain::ErrorCode::ProjectAlreadyExists,
+                QStringLiteral("The selected project directory changed during creation."),
+                QStringLiteral(
+                    "An unexpected directory entry appeared before Corax initialized the project."),
+                rootPath,
+                QStringLiteral("Choose a new or empty directory and try again."),
+                true));
     }
 
     QDir root(rootPath);
@@ -222,16 +276,17 @@ SqliteProjectStore::createProject(const application::NewProject& project)
     {
         if (!root.mkpath(QString::fromLatin1(relativePath)))
         {
-            removeOwnedProjectArtifacts(rootPath);
-            static_cast<void>(impl_->writerLock.release());
-            return domain::Result<domain::ProjectInfo>::failure(projectError(
-                domain::ErrorCode::ProjectCreateFailed,
-                QStringLiteral("Corax could not create the project structure."),
-                QStringLiteral("Failed to create required directory '%1'.")
-                    .arg(QString::fromLatin1(relativePath)),
+            return projectFailureAfterLockReleaseAndCleanup(
+                impl_->writerLock,
                 rootPath,
-                QStringLiteral("Check directory permissions and available disk space."),
-                true));
+                projectError(
+                    domain::ErrorCode::ProjectCreateFailed,
+                    QStringLiteral("Corax could not create the project structure."),
+                    QStringLiteral("Failed to create required directory '%1'.")
+                        .arg(QString::fromLatin1(relativePath)),
+                    rootPath,
+                    QStringLiteral("Check directory permissions and available disk space."),
+                    true));
         }
     }
 
@@ -247,9 +302,9 @@ SqliteProjectStore::createProject(const application::NewProject& project)
     auto manifestWritten = impl_->manifests.write(manifestPath, manifest);
     if (!manifestWritten)
     {
-        removeOwnedProjectArtifacts(rootPath);
-        static_cast<void>(impl_->writerLock.release());
-        return domain::Result<domain::ProjectInfo>::failure(std::move(manifestWritten).error());
+        auto operationError = std::move(manifestWritten).error();
+        return projectFailureAfterLockReleaseAndCleanup(
+            impl_->writerLock, rootPath, std::move(operationError));
     }
 
     const domain::ProjectInfo initialInfo{
@@ -263,19 +318,19 @@ SqliteProjectStore::createProject(const application::NewProject& project)
     auto initialized = SqliteProjectDatabase::initializeNew(databasePath, initialInfo);
     if (!initialized)
     {
-        removeOwnedProjectArtifacts(rootPath);
-        static_cast<void>(impl_->writerLock.release());
-        return domain::Result<domain::ProjectInfo>::failure(std::move(initialized).error());
+        auto operationError = std::move(initialized).error();
+        return projectFailureAfterLockReleaseAndCleanup(
+            impl_->writerLock, rootPath, std::move(operationError));
     }
 
     auto database = std::move(initialized).value();
     auto storedInfo = database->projectInfo();
     if (!storedInfo)
     {
+        auto operationError = std::move(storedInfo).error();
         database.reset();
-        removeOwnedProjectArtifacts(rootPath);
-        static_cast<void>(impl_->writerLock.release());
-        return domain::Result<domain::ProjectInfo>::failure(std::move(storedInfo).error());
+        return projectFailureAfterLockReleaseAndCleanup(
+            impl_->writerLock, rootPath, std::move(operationError));
     }
     database.reset();
 
@@ -285,6 +340,10 @@ SqliteProjectStore::createProject(const application::NewProject& project)
 
 domain::Result<domain::ProjectInfo> SqliteProjectStore::openProject(const QString& projectDirectory)
 {
+    if (const auto recoveryError = impl_->writerLock.recoveryError())
+    {
+        return domain::Result<domain::ProjectInfo>::failure(*recoveryError);
+    }
     if (impl_->current.has_value())
     {
         return domain::Result<domain::ProjectInfo>::failure(
@@ -293,6 +352,16 @@ domain::Result<domain::ProjectInfo> SqliteProjectStore::openProject(const QStrin
                          QStringLiteral("SqliteProjectStore already has an open project."),
                          impl_->current->projectPath,
                          QStringLiteral("Close the current project and try again.")));
+    }
+    if (impl_->writerLock.ownsLock())
+    {
+        return domain::Result<domain::ProjectInfo>::failure(projectError(
+            domain::ErrorCode::ProjectLockFailed,
+            QStringLiteral("Corax must finish releasing its previous writer lock."),
+            QStringLiteral("A previous failed project operation still owns a writer lock."),
+            impl_->writerLock.lockPath(),
+            QStringLiteral("Retry closing the project or restart Corax before continuing."),
+            true));
     }
 
     const QString rootPath = normalizedAbsolutePath(projectDirectory);
@@ -324,17 +393,16 @@ domain::Result<domain::ProjectInfo> SqliteProjectStore::openProject(const QStrin
         root.filePath(manifest.value().databaseFile), rootPath, manifest.value().projectId);
     if (!opened)
     {
-        static_cast<void>(impl_->writerLock.release());
-        return domain::Result<domain::ProjectInfo>::failure(std::move(opened).error());
+        return projectFailureAfterLockRelease(impl_->writerLock, std::move(opened).error());
     }
 
     auto database = std::move(opened).value();
     auto storedInfo = database->projectInfo();
     if (!storedInfo)
     {
+        auto operationError = std::move(storedInfo).error();
         database.reset();
-        static_cast<void>(impl_->writerLock.release());
-        return domain::Result<domain::ProjectInfo>::failure(std::move(storedInfo).error());
+        return projectFailureAfterLockRelease(impl_->writerLock, std::move(operationError));
     }
     database.reset();
 
@@ -356,6 +424,11 @@ domain::Result<void> SqliteProjectStore::closeProject()
 std::optional<domain::ProjectInfo> SqliteProjectStore::currentProject() const
 {
     return impl_->current;
+}
+
+bool SqliteProjectStore::recoveryRequired() const noexcept
+{
+    return impl_->writerLock.recoveryRequired();
 }
 
 } // namespace corax::storage_sqlite
