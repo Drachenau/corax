@@ -1,0 +1,5 @@
+add_subdirectory(test_support)
+add_subdirectory(core)
+add_subdirectory(storage)
+add_subdirectory(jobs)
+add_subdirectory(qml)

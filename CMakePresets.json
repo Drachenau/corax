@@ -1,0 +1,120 @@
+{
+  "version": 8,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "ninja-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "dev-debug",
+      "displayName": "Developer Debug",
+      "inherits": "ninja-base",
+      "binaryDir": "${sourceDir}/build/dev-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CORAX_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "ci-debug",
+      "displayName": "CI Debug",
+      "inherits": "ninja-base",
+      "binaryDir": "${sourceDir}/build/ci-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CORAX_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "ci-release",
+      "displayName": "CI Release",
+      "inherits": "ninja-base",
+      "binaryDir": "${sourceDir}/build/ci-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CORAX_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "analysis",
+      "displayName": "Clang Static Analysis",
+      "inherits": "ninja-base",
+      "binaryDir": "${sourceDir}/build/analysis",
+      "cacheVariables": {
+        "BUILD_TESTING": "OFF",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_CXX_SCAN_FOR_MODULES": "OFF",
+        "CORAX_WARNINGS_AS_ERRORS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev-debug",
+      "configurePreset": "dev-debug",
+      "jobs": 4
+    },
+    {
+      "name": "ci-debug",
+      "configurePreset": "ci-debug",
+      "jobs": 4
+    },
+    {
+      "name": "ci-release",
+      "configurePreset": "ci-release",
+      "jobs": 4
+    },
+    {
+      "name": "analysis",
+      "configurePreset": "analysis",
+      "jobs": 4
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev-debug",
+      "configurePreset": "dev-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "QT_QPA_PLATFORM": "offscreen",
+        "QT_QUICK_BACKEND": "software"
+      }
+    },
+    {
+      "name": "ci-debug",
+      "configurePreset": "ci-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "QT_QPA_PLATFORM": "offscreen",
+        "QT_QUICK_BACKEND": "software"
+      }
+    },
+    {
+      "name": "ci-release",
+      "configurePreset": "ci-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "QT_QPA_PLATFORM": "offscreen",
+        "QT_QUICK_BACKEND": "software"
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+qt_add_executable(corax_jobs_tests test_job_scheduler.cpp)
+
+target_link_libraries(corax_jobs_tests PRIVATE Qt6::Test corax_jobs)
+target_compile_features(corax_jobs_tests PRIVATE cxx_std_23)
+set_target_properties(corax_jobs_tests PROPERTIES CXX_EXTENSIONS OFF)
+corax_enable_warnings(corax_jobs_tests)
+
+add_test(NAME corax_jobs_tests COMMAND corax_jobs_tests)
