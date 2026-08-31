@@ -14,18 +14,26 @@ file(
     "${SOURCE_ROOT}/src/*.hxx"
 )
 
-foreach(source_file IN LISTS production_files)
-    if(source_file MATCHES "/src/storage_sqlite/")
-        continue()
-    endif()
+string(ASCII 9 horizontal_tab)
+set(horizontal_whitespace " ${horizontal_tab}")
+set(
+    qt_private_header_pattern
+    "#[${horizontal_whitespace}]*INCLUDE[${horizontal_whitespace}]*[<\"](QT[A-Z0-9_]+/([^>\"]*/)?)?PRIVATE/[^>\"]+_P\\.H[>\"]"
+)
 
+foreach(source_file IN LISTS production_files)
     file(READ "${source_file}" source_content)
     string(TOUPPER "${source_content}" normalized_source_content)
     string(REGEX REPLACE "#[ \\t]*PRAGMA[ \\t]+ONCE" "" normalized_source_content
                          "${normalized_source_content}")
-    if(normalized_source_content MATCHES "#[ \\t]*INCLUDE[ \\t]*[<\"][^>\"]*PRIVATE/")
-        message(FATAL_ERROR "Private API header used by Corax source: ${source_file}")
+    if(normalized_source_content MATCHES "${qt_private_header_pattern}")
+        message(FATAL_ERROR "Qt private API header used by Corax source: ${source_file}")
     endif()
+
+    if(source_file MATCHES "/src/storage_sqlite/")
+        continue()
+    endif()
+
     if(normalized_source_content MATCHES "SQLITE3\\.H|SQLITE3_[A-Z0-9_]+")
         message(FATAL_ERROR "SQLite API escaped corax_storage_sqlite: ${source_file}")
     endif()

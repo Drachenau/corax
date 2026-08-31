@@ -125,5 +125,21 @@ function(corax_add_developer_tools)
                 "-DSOURCE_ROOT=${CMAKE_SOURCE_DIR}"
                 -P "${CMAKE_SOURCE_DIR}/cmake/CheckBoundaries.cmake"
         )
+        add_test(
+            NAME architecture_boundary_rules
+            COMMAND
+                "${CMAKE_COMMAND}"
+                "-DSOURCE_ROOT=${CMAKE_SOURCE_DIR}"
+                "-DTEST_BINARY_ROOT=${CMAKE_BINARY_DIR}/tests/architecture_boundary_rules"
+                -P "${CMAKE_SOURCE_DIR}/cmake/tests/CheckBoundaryRules.cmake"
+        )
+        add_test(
+            NAME architecture_dependency_rules
+            COMMAND
+                "${CMAKE_COMMAND}"
+                "-DSOURCE_ROOT=${CMAKE_SOURCE_DIR}"
+                "-DTEST_BINARY_ROOT=${CMAKE_BINARY_DIR}/tests/architecture_dependency_rules"
+                -P "${CMAKE_SOURCE_DIR}/cmake/tests/CheckDependencyRules.cmake"
+        )
     endif()
 endfunction()

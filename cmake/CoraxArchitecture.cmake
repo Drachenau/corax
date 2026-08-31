@@ -6,6 +6,7 @@ function(corax_assert_corax_dependencies target)
         return()
     endif()
 
+    set(forbidden_dependencies)
     foreach(link_library IN LISTS link_libraries)
         set(candidate "${link_library}")
         if(TARGET "${link_library}")
@@ -18,10 +19,10 @@ function(corax_assert_corax_dependencies target)
         if(candidate MATCHES "^corax_[A-Za-z0-9_]+$")
             list(FIND ARG_ALLOWED "${candidate}" allowed_index)
             if(allowed_index EQUAL -1)
-                message(
-                    FATAL_ERROR
-                    "${target} has forbidden direct Corax dependency ${candidate}. "
-                    "Allowed Corax dependencies: ${ARG_ALLOWED}"
+                string(REPLACE ";" ", " allowed_corax "${ARG_ALLOWED}")
+                list(
+                    APPEND forbidden_dependencies
+                    "${candidate} (allowed Corax dependencies: ${allowed_corax})"
                 )
             endif()
         elseif(candidate MATCHES "^Qt6::([A-Za-z0-9_]+)$")
@@ -29,13 +30,23 @@ function(corax_assert_corax_dependencies target)
             list(FIND ARG_ALLOWED_QT "${qt_component}" allowed_qt_index)
             list(FIND ARG_QT_GENERATED "${qt_component}" generated_qt_index)
             if(allowed_qt_index EQUAL -1 AND generated_qt_index EQUAL -1)
-                message(
-                    FATAL_ERROR
-                    "${target} has forbidden direct Qt dependency ${candidate}. "
-                    "Allowed Qt components: ${ARG_ALLOWED_QT}. "
-                    "Qt-generated components: ${ARG_QT_GENERATED}"
+                string(REPLACE ";" ", " allowed_qt "${ARG_ALLOWED_QT}")
+                string(REPLACE ";" ", " generated_qt "${ARG_QT_GENERATED}")
+                string(
+                    CONCAT dependency_description
+                    "${candidate} (allowed Qt components: ${allowed_qt}, "
+                    "Qt-generated components: ${generated_qt})"
                 )
+                list(APPEND forbidden_dependencies "${dependency_description}")
             endif()
         endif()
     endforeach()
+
+    if(forbidden_dependencies)
+        list(JOIN forbidden_dependencies "\n  - " dependency_report)
+        message(
+            FATAL_ERROR
+            "${target} has forbidden direct dependencies:\n  - ${dependency_report}"
+        )
+    endif()
 endfunction()
