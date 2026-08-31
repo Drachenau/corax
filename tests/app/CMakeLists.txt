@@ -18,7 +18,12 @@ target_link_libraries(
 )
 
 target_compile_features(corax_app_integration_tests PRIVATE cxx_std_23)
-set_target_properties(corax_app_integration_tests PROPERTIES CXX_EXTENSIONS OFF)
+set_target_properties(
+    corax_app_integration_tests
+    PROPERTIES
+        CXX_EXTENSIONS OFF
+        WIN32_EXECUTABLE FALSE
+)
 corax_enable_warnings(corax_app_integration_tests)
 
 qt_import_qml_plugins(corax_app_integration_tests)

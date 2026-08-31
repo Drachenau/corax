@@ -1,4 +1,5 @@
 qt_add_executable(corax_app
+    WIN32
     main.cpp
 )
 
@@ -29,7 +30,6 @@ set_target_properties(
         MACOSX_BUNDLE_GUI_IDENTIFIER "${CORAX_APPLICATION_IDENTIFIER}"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
         OUTPUT_NAME corax
-        WIN32_EXECUTABLE TRUE
 )
 
 corax_enable_warnings(corax_app)

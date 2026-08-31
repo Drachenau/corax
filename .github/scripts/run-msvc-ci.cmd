@@ -77,17 +77,15 @@ echo ::endgroup::
 if not "%CORAX_EXIT%"=="0" exit /b %CORAX_EXIT%
 
 echo ::group::Verify Windows executable subsystems
-dumpbin /headers "build\%CORAX_PRESET%\src\app\corax.exe" | findstr /C:"Windows GUI"
-if errorlevel 1 goto subsystem_failed
-dumpbin /headers "build\%CORAX_PRESET%\tests\app\corax_app_integration_tests.exe" | findstr /C:"Windows CUI"
-if errorlevel 1 goto subsystem_failed
+powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".github\scripts\verify-windows-subsystems.ps1" -GuiExecutable "build\%CORAX_PRESET%\src\app\corax.exe" -ConsoleExecutable "build\%CORAX_PRESET%\tests\app\corax_app_integration_tests.exe"
+set "CORAX_EXIT=%ERRORLEVEL%"
 echo ::endgroup::
+if not "%CORAX_EXIT%"=="0" goto subsystem_failed
 goto subsystem_verified
 
 :subsystem_failed
-echo ::endgroup::
-echo ::error::The production application or app integration test has the wrong Windows subsystem.
-exit /b 1
+echo ::error::Windows executable subsystem verification failed with exit code %CORAX_EXIT%.
+exit /b %CORAX_EXIT%
 
 :subsystem_verified
 
