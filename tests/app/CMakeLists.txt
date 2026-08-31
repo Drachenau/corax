@@ -35,3 +35,19 @@ set_tests_properties(
         ENVIRONMENT
             "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic"
 )
+
+if(WIN32)
+    find_program(corax_powershell_executable NAMES powershell.exe powershell REQUIRED)
+    add_test(
+        NAME corax.app.windows_subsystems
+        COMMAND
+            "${corax_powershell_executable}"
+            -NoLogo
+            -NoProfile
+            -NonInteractive
+            -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/.github/scripts/verify-windows-subsystems.ps1"
+            -GuiExecutable "$<TARGET_FILE:corax_app>"
+            -ConsoleExecutable "$<TARGET_FILE:corax_app_integration_tests>"
+    )
+endif()
