@@ -76,6 +76,9 @@ corax_assert_corax_dependencies(
     corax_ui
     ALLOWED corax_presentation
     ALLOWED_QT Core Qml QmlIntegration Quick QuickControls2
+    # Qt 6.8.3 adds this implementation target from qt_add_qml_module. Corax
+    # sources must still pass the private-header check in CheckBoundaries.cmake.
+    QT_GENERATED QmlPrivate
 )
 corax_assert_corax_dependencies(
     corax_platform

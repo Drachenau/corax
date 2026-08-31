@@ -1,5 +1,5 @@
 function(corax_assert_corax_dependencies target)
-    cmake_parse_arguments(ARG "" "" "ALLOWED;ALLOWED_QT" ${ARGN})
+    cmake_parse_arguments(ARG "" "" "ALLOWED;ALLOWED_QT;QT_GENERATED" ${ARGN})
 
     get_target_property(link_libraries ${target} LINK_LIBRARIES)
     if(NOT link_libraries)
@@ -27,11 +27,13 @@ function(corax_assert_corax_dependencies target)
         elseif(candidate MATCHES "^Qt6::([A-Za-z0-9_]+)$")
             set(qt_component "${CMAKE_MATCH_1}")
             list(FIND ARG_ALLOWED_QT "${qt_component}" allowed_qt_index)
-            if(allowed_qt_index EQUAL -1)
+            list(FIND ARG_QT_GENERATED "${qt_component}" generated_qt_index)
+            if(allowed_qt_index EQUAL -1 AND generated_qt_index EQUAL -1)
                 message(
                     FATAL_ERROR
                     "${target} has forbidden direct Qt dependency ${candidate}. "
-                    "Allowed Qt components: ${ARG_ALLOWED_QT}"
+                    "Allowed Qt components: ${ARG_ALLOWED_QT}. "
+                    "Qt-generated components: ${ARG_QT_GENERATED}"
                 )
             endif()
         endif()
