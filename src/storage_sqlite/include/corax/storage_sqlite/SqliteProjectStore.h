@@ -35,6 +35,7 @@ public:
     openProject(const QString& projectDirectory) override;
     [[nodiscard]] domain::Result<void> closeProject() override;
     [[nodiscard]] std::optional<domain::ProjectInfo> currentProject() const override;
+    [[nodiscard]] bool recoveryRequired() const noexcept override;
 
 private:
     class Impl;

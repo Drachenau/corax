@@ -95,6 +95,32 @@ ApplicationWindow {
             }
         }
 
+        Frame {
+            objectName: "recoveryRequiredBanner"
+            Layout.fillWidth: true
+            visible: root.projectController.recoveryRequired
+            padding: Design.DesignTokens.space3
+            Accessible.name: recoveryRequiredMessage.text
+            Accessible.role: Accessible.AlertMessage
+
+            Label {
+                id: recoveryRequiredMessage
+
+                objectName: "recoveryRequiredMessage"
+                anchors.fill: parent
+                text: qsTr("Project recovery is required. Corax cannot verify writer-lock ownership. Restart Corax after you verify which process owns the project lock.")
+                color: Design.DesignTokens.errorText
+                font.bold: true
+                wrapMode: Text.Wrap
+            }
+
+            background: Rectangle {
+                color: Design.DesignTokens.errorSurface
+                border.color: Design.DesignTokens.errorText
+                border.width: 1
+            }
+        }
+
         SplitView {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -190,13 +216,13 @@ ApplicationWindow {
                             id: newProjectButton
 
                             text: qsTr("Create project")
-                            enabled: !root.projectController.busy
+                            enabled: !root.projectController.busy && !root.projectController.recoveryRequired
                             onClicked: newProjectDialog.open()
                         }
 
                         FocusButton {
                             text: qsTr("Open project")
-                            enabled: !root.projectController.busy
+                            enabled: !root.projectController.busy && !root.projectController.recoveryRequired
                             onClicked: openProjectDialog.open()
                         }
 

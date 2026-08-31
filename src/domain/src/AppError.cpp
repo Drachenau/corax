@@ -55,6 +55,10 @@ QString errorCodeName(const ErrorCode code)
         return QStringLiteral("database.transaction_failed");
     case ErrorCode::InternalError:
         return QStringLiteral("core.internal_error");
+    case ErrorCode::ProjectOperationFailed:
+        return QStringLiteral("project.operation_failed");
+    case ErrorCode::ProjectOperationCanceled:
+        return QStringLiteral("project.operation_canceled");
     }
 
     return QStringLiteral("core.unknown_error");

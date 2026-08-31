@@ -33,6 +33,7 @@ using corax::storage_sqlite::IAtomicFileWriter;
 using corax::storage_sqlite::ISqliteInitializationFaultInjector;
 using corax::storage_sqlite::ManifestStore;
 using corax::storage_sqlite::ProjectManifest;
+using corax::storage_sqlite::ProjectWriterLock;
 using corax::storage_sqlite::SqliteProjectDatabase;
 using corax::storage_sqlite::SqliteProjectStore;
 
@@ -91,6 +92,55 @@ public:
     }
 
     int calls{0};
+};
+
+class LockTamperingAtomicWriter final : public IAtomicFileWriter
+{
+public:
+    Result<void> writeAtomically(const QString& path, const QByteArray&) override
+    {
+        ++calls;
+        lockPath = QFileInfo(path).dir().filePath(QStringLiteral(".corax.writer.lock"));
+        const QJsonObject replacement{
+            {QStringLiteral("format"), QStringLiteral("org.corax.writer-lock")},
+            {QStringLiteral("formatVersion"), 1},
+            {QStringLiteral("projectId"), QString::fromLatin1(kOtherIdText)},
+            {QStringLiteral("ownershipToken"), QStringLiteral("replacement-token")},
+        };
+        replacementContents = QJsonDocument(replacement).toJson(QJsonDocument::Compact) + '\n';
+        QFile lock(lockPath);
+        if (lock.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        {
+            replacementLockWritten = lock.write(replacementContents) == replacementContents.size();
+            lock.close();
+        }
+
+        projectArtifactPath = path;
+        projectArtifactContents = QByteArrayLiteral("replacement-owner-project-artifact\n");
+        QFile projectArtifact(projectArtifactPath);
+        if (projectArtifact.open(QIODevice::WriteOnly | QIODevice::NewOnly))
+        {
+            replacementProjectArtifactWritten =
+                projectArtifact.write(projectArtifactContents) == projectArtifactContents.size();
+            projectArtifact.close();
+        }
+        return Result<void>::failure({
+            .code = ErrorCode::ManifestWriteFailed,
+            .userMessage = QStringLiteral("Injected manifest failure after lock replacement."),
+            .technicalContext = QStringLiteral("The test replaced the lock before cleanup."),
+            .remediation = QStringLiteral("Use the real atomic writer."),
+            .affectedPath = path,
+            .retryable = true,
+        });
+    }
+
+    int calls{0};
+    QString lockPath;
+    QByteArray replacementContents;
+    QString projectArtifactPath;
+    QByteArray projectArtifactContents;
+    bool replacementLockWritten{false};
+    bool replacementProjectArtifactWritten{false};
 };
 
 class FailBeforeMigrationCommit final : public ISqliteInitializationFaultInjector
@@ -762,6 +812,301 @@ private slots:
         QVERIFY(opened.error().technicalContext.contains(QStringLiteral("malformed")));
         QVERIFY(QFile::exists(lockPath));
         QVERIFY(QFile::remove(lockPath));
+    }
+
+    void writerLockTamperingPreservesReplacement_data()
+    {
+        QTest::addColumn<QString>("field");
+        QTest::addColumn<QString>("replacementValue");
+        QTest::addColumn<bool>("malformed");
+
+        QTest::newRow("ownership-token")
+            << QStringLiteral("ownershipToken") << QStringLiteral("replacement-token") << false;
+        QTest::newRow("project-id")
+            << QStringLiteral("projectId") << QString::fromLatin1(kOtherIdText) << false;
+        QTest::newRow("malformed") << QString{} << QString{} << true;
+    }
+
+    void writerLockTamperingPreservesReplacement()
+    {
+        QFETCH(QString, field);
+        QFETCH(QString, replacementValue);
+        QFETCH(bool, malformed);
+
+        QTemporaryDir projectDirectory;
+        QVERIFY(projectDirectory.isValid());
+        const QUuid projectId(QString::fromLatin1(kFixtureIdText));
+        ProjectWriterLock lock;
+        QVERIFY(lock.acquire(projectDirectory.path(), projectId));
+        const QString lockPath = lock.lockPath();
+
+        QFile lockFile(lockPath);
+        QVERIFY(lockFile.open(QIODevice::ReadOnly));
+        const QJsonDocument acquiredDocument = QJsonDocument::fromJson(lockFile.readAll());
+        lockFile.close();
+        QVERIFY(acquiredDocument.isObject());
+
+        QByteArray replacementContents;
+        if (malformed)
+        {
+            replacementContents = QByteArrayLiteral("not-json");
+        }
+        else
+        {
+            QJsonObject replacement = acquiredDocument.object();
+            replacement.insert(field, replacementValue);
+            replacementContents = QJsonDocument(replacement).toJson(QJsonDocument::Compact);
+        }
+        QVERIFY(lockFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(lockFile.write(replacementContents), qint64(replacementContents.size()));
+        lockFile.close();
+
+        auto firstRelease = lock.release();
+        QVERIFY(!firstRelease);
+        QCOMPARE(firstRelease.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
+        QCOMPARE(firstRelease.error().affectedPath, lockPath);
+        QVERIFY(
+            firstRelease.error().technicalContext.contains(QString::fromLatin1(kFixtureIdText)));
+        QVERIFY(lock.recoveryRequired());
+        QCOMPARE(lock.lockPath(), lockPath);
+
+        auto repeatedRelease = lock.release();
+        QVERIFY(!repeatedRelease);
+        QCOMPARE(repeatedRelease.error().stableCode(),
+                 QStringLiteral("project.lock_ownership_lost"));
+        QCOMPARE(repeatedRelease.error().affectedPath, lockPath);
+
+        QVERIFY(lockFile.open(QIODevice::ReadOnly));
+        QCOMPARE(lockFile.readAll(), replacementContents);
+        lockFile.close();
+
+        lock.abandon();
+        QVERIFY(!lock.ownsLock());
+        QVERIFY(!lock.recoveryRequired());
+        QVERIFY(lock.lockPath().isEmpty());
+        QVERIFY(lock.release());
+        QVERIFY(QFile::exists(lockPath));
+    }
+
+    void missingOwnedWriterLockRequiresRecovery()
+    {
+        QTemporaryDir projectDirectory;
+        QVERIFY(projectDirectory.isValid());
+        const QUuid projectId(QString::fromLatin1(kFixtureIdText));
+        ProjectWriterLock lock;
+        QVERIFY(lock.acquire(projectDirectory.path(), projectId));
+        const QString lockPath = lock.lockPath();
+        QVERIFY(QFile::remove(lockPath));
+
+        auto firstRelease = lock.release();
+        QVERIFY(!firstRelease);
+        QCOMPARE(firstRelease.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
+        QCOMPARE(firstRelease.error().affectedPath, lockPath);
+        QVERIFY(
+            firstRelease.error().technicalContext.contains(QString::fromLatin1(kFixtureIdText)));
+        QVERIFY(lock.recoveryRequired());
+
+        auto repeatedRelease = lock.release();
+        QVERIFY(!repeatedRelease);
+        QCOMPARE(repeatedRelease.error().stableCode(),
+                 QStringLiteral("project.lock_ownership_lost"));
+        QCOMPARE(lock.lockPath(), lockPath);
+        lock.abandon();
+    }
+
+    void writerLockDestructorDoesNotDeleteReplacementAfterOwnershipLoss()
+    {
+        QTemporaryDir projectDirectory;
+        QVERIFY(projectDirectory.isValid());
+        const QUuid projectId(QString::fromLatin1(kFixtureIdText));
+        const QString lockPath =
+            QDir(projectDirectory.path()).filePath(QStringLiteral(".corax.writer.lock"));
+        QByteArray replacementContents;
+
+        {
+            ProjectWriterLock lock;
+            QVERIFY(lock.acquire(projectDirectory.path(), projectId));
+
+            QFile lockFile(lockPath);
+            QVERIFY(lockFile.open(QIODevice::ReadOnly));
+            QJsonObject replacement = QJsonDocument::fromJson(lockFile.readAll()).object();
+            lockFile.close();
+            replacement.insert(QStringLiteral("ownershipToken"),
+                               QStringLiteral("replacement-token"));
+            replacementContents = QJsonDocument(replacement).toJson(QJsonDocument::Compact);
+            QVERIFY(lockFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            QCOMPARE(lockFile.write(replacementContents), qint64(replacementContents.size()));
+            lockFile.close();
+
+            auto released = lock.release();
+            QVERIFY(!released);
+            QCOMPARE(released.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
+        }
+
+        QFile replacement(lockPath);
+        QVERIFY(replacement.open(QIODevice::ReadOnly));
+        QCOMPARE(replacement.readAll(), replacementContents);
+    }
+
+    void storeRetainsCurrentProjectAfterOwnershipLoss_data()
+    {
+        QTest::addColumn<QString>("tamperMode");
+        QTest::newRow("ownership-token") << QStringLiteral("ownership-token");
+        QTest::newRow("project-id") << QStringLiteral("project-id");
+        QTest::newRow("missing-lock") << QStringLiteral("missing-lock");
+    }
+
+    void storeRetainsCurrentProjectAfterOwnershipLoss()
+    {
+        QFETCH(QString, tamperMode);
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        const QString projectPath =
+            temporaryDirectory.filePath(QStringLiteral("OwnershipLoss.corax"));
+        const QString otherProjectPath =
+            temporaryDirectory.filePath(QStringLiteral("MustRemainAbsent.corax"));
+        SqliteProjectStore store;
+        ProjectService service(
+            store,
+            [] { return QUuid(QString::fromLatin1(kFixtureIdText)); },
+            [] { return fixtureTime(); });
+        auto created = service.createProject(projectPath, QStringLiteral("Ownership Loss"));
+        QVERIFY(created);
+
+        const QString lockPath = QDir(projectPath).filePath(QStringLiteral(".corax.writer.lock"));
+        QFile lockFile(lockPath);
+        QVERIFY(lockFile.open(QIODevice::ReadOnly));
+        QJsonObject replacement = QJsonDocument::fromJson(lockFile.readAll()).object();
+        lockFile.close();
+        QByteArray replacementContents;
+        if (tamperMode == QStringLiteral("missing-lock"))
+        {
+            QVERIFY(QFile::remove(lockPath));
+        }
+        else
+        {
+            if (tamperMode == QStringLiteral("project-id"))
+            {
+                replacement.insert(QStringLiteral("projectId"), QString::fromLatin1(kOtherIdText));
+            }
+            else
+            {
+                replacement.insert(QStringLiteral("ownershipToken"),
+                                   QStringLiteral("replacement-token"));
+            }
+            replacementContents = QJsonDocument(replacement).toJson(QJsonDocument::Compact);
+            QVERIFY(lockFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            QCOMPARE(lockFile.write(replacementContents), qint64(replacementContents.size()));
+            lockFile.close();
+        }
+
+        auto firstClose = service.closeProject();
+        QVERIFY(!firstClose);
+        QCOMPARE(firstClose.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
+        QVERIFY(service.currentProject().has_value());
+        QVERIFY(service.recoveryRequired());
+
+        auto repeatedClose = service.closeProject();
+        QVERIFY(!repeatedClose);
+        QCOMPARE(repeatedClose.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
+        QVERIFY(service.currentProject().has_value());
+        QVERIFY(service.recoveryRequired());
+
+        auto blockedCreate = service.createProject(otherProjectPath, QStringLiteral("Blocked"));
+        QVERIFY(!blockedCreate);
+        QCOMPARE(blockedCreate.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
+        QVERIFY(!QFileInfo::exists(otherProjectPath));
+
+        if (tamperMode == QStringLiteral("missing-lock"))
+        {
+            QVERIFY(!QFile::exists(lockPath));
+        }
+        else
+        {
+            QVERIFY(lockFile.open(QIODevice::ReadOnly));
+            QCOMPARE(lockFile.readAll(), replacementContents);
+            lockFile.close();
+        }
+    }
+
+    void createCleanupPrioritizesWriterLockOwnershipLoss()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        const QString projectPath =
+            temporaryDirectory.filePath(QStringLiteral("CleanupOwnershipLoss.corax"));
+        const QString blockedPath =
+            temporaryDirectory.filePath(QStringLiteral("BlockedAfterCleanup.corax"));
+        auto writer = std::make_shared<LockTamperingAtomicWriter>();
+        SqliteProjectStore store(writer);
+        ProjectService service(
+            store,
+            [] { return QUuid(QString::fromLatin1(kFixtureIdText)); },
+            [] { return fixtureTime(); });
+
+        auto created = service.createProject(projectPath, QStringLiteral("Cleanup Fixture"));
+        QVERIFY(!created);
+        QCOMPARE(created.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
+        QVERIFY(created.error().technicalContext.contains(QStringLiteral("manifest.write_failed")));
+        QVERIFY(created.error().technicalContext.contains(
+            QStringLiteral("The test replaced the lock before cleanup.")));
+        QCOMPARE(writer->calls, 1);
+        QVERIFY(writer->replacementLockWritten);
+        QVERIFY(writer->replacementProjectArtifactWritten);
+        QVERIFY(store.recoveryRequired());
+        QVERIFY(!store.currentProject().has_value());
+
+        QFile replacement(writer->lockPath);
+        QVERIFY(replacement.open(QIODevice::ReadOnly));
+        QCOMPARE(replacement.readAll(), writer->replacementContents);
+        replacement.close();
+
+        QFile replacementProjectArtifact(writer->projectArtifactPath);
+        QVERIFY(replacementProjectArtifact.open(QIODevice::ReadOnly));
+        QCOMPARE(replacementProjectArtifact.readAll(), writer->projectArtifactContents);
+        replacementProjectArtifact.close();
+        QVERIFY(QDir(QDir(projectPath).filePath(QStringLiteral("managed/originals"))).exists());
+        QVERIFY(QDir(QDir(projectPath).filePath(QStringLiteral("cache/previews"))).exists());
+
+        auto blocked = service.createProject(blockedPath, QStringLiteral("Blocked"));
+        QVERIFY(!blocked);
+        QCOMPARE(blocked.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
+        QVERIFY(!QFileInfo::exists(blockedPath));
+        QVERIFY(QFile::exists(writer->lockPath));
+        QVERIFY(QFile::exists(writer->projectArtifactPath));
+    }
+
+    void createFailureCleansArtifactsAfterSuccessfulLockRelease()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        const QString projectPath =
+            temporaryDirectory.filePath(QStringLiteral("OrdinaryCleanup.corax"));
+        auto writer = std::make_shared<FailingAtomicWriter>();
+        SqliteProjectStore store(writer);
+        ProjectService service(
+            store,
+            [] { return QUuid(QString::fromLatin1(kFixtureIdText)); },
+            [] { return fixtureTime(); });
+
+        auto created = service.createProject(projectPath, QStringLiteral("Cleanup Fixture"));
+        QVERIFY(!created);
+        QCOMPARE(created.error().stableCode(), QStringLiteral("manifest.write_failed"));
+        QCOMPARE(writer->calls, 1);
+        QVERIFY(!store.recoveryRequired());
+        QVERIFY(!store.currentProject().has_value());
+
+        const QDir projectDirectory(projectPath);
+        QVERIFY(projectDirectory.exists());
+        QVERIFY(!QFile::exists(projectDirectory.filePath(QStringLiteral(".corax.writer.lock"))));
+        QVERIFY(!QFile::exists(projectDirectory.filePath(QStringLiteral("corax.project.json"))));
+        QVERIFY(!QFile::exists(projectDirectory.filePath(QStringLiteral("project.sqlite3"))));
+        QVERIFY(!QDir(projectDirectory.filePath(QStringLiteral("managed/originals"))).exists());
+        QVERIFY(!QDir(projectDirectory.filePath(QStringLiteral("cache/previews"))).exists());
+        QVERIFY(
+            projectDirectory
+                .entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
+                .isEmpty());
     }
 };
 

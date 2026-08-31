@@ -7,6 +7,8 @@
 #include <QString>
 #include <QUuid>
 
+#include <optional>
+
 namespace corax::storage_sqlite
 {
 
@@ -26,20 +28,38 @@ public:
     [[nodiscard]] domain::Result<void> acquire(const QString& projectDirectory,
                                                const QUuid& projectId);
     [[nodiscard]] domain::Result<void> release();
+    void abandon() noexcept;
 
     [[nodiscard]] bool ownsLock() const noexcept
     {
-        return !ownershipToken_.isEmpty();
+        return state_ == State::Owned;
+    }
+    [[nodiscard]] bool recoveryRequired() const noexcept
+    {
+        return state_ == State::OwnershipLost;
     }
     [[nodiscard]] QString lockPath() const
     {
         return lockPath_;
     }
+    [[nodiscard]] std::optional<domain::AppError> recoveryError() const;
 
 private:
+    enum class State
+    {
+        Unowned,
+        Owned,
+        OwnershipLost,
+    };
+
+    void markOwnershipLost(domain::AppError error);
+    void clearLocalState() noexcept;
+
+    State state_{State::Unowned};
     QString lockPath_;
     QString ownershipToken_;
     QUuid projectId_;
+    std::optional<domain::AppError> recoveryError_;
 };
 
 } // namespace corax::storage_sqlite

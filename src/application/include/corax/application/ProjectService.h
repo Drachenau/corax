@@ -23,6 +23,7 @@ public:
     [[nodiscard]] domain::Result<domain::ProjectInfo> openProject(const QString& projectDirectory);
     [[nodiscard]] domain::Result<void> closeProject();
     [[nodiscard]] std::optional<domain::ProjectInfo> currentProject() const;
+    [[nodiscard]] bool recoveryRequired() const noexcept;
 
 private:
     IProjectStore& store_;

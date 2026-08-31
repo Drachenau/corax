@@ -73,13 +73,21 @@ ProjectWriterLock::~ProjectWriterLock()
 {
     if (ownsLock())
     {
-        static_cast<void>(release());
+        const auto released = release();
+        if (!released)
+        {
+            abandon();
+        }
     }
 }
 
 domain::Result<void> ProjectWriterLock::acquire(const QString& projectDirectory,
                                                 const QUuid& projectId)
 {
+    if (recoveryRequired())
+    {
+        return domain::Result<void>::failure(*recoveryError_);
+    }
     if (ownsLock())
     {
         return domain::Result<void>::failure(
@@ -159,29 +167,33 @@ domain::Result<void> ProjectWriterLock::acquire(const QString& projectDirectory,
     lockPath_ = path;
     ownershipToken_ = token;
     projectId_ = projectId;
+    state_ = State::Owned;
     return domain::Result<void>::success();
 }
 
 domain::Result<void> ProjectWriterLock::release()
 {
-    if (!ownsLock())
+    if (state_ == State::Unowned)
     {
         return domain::Result<void>::success();
+    }
+    if (recoveryRequired())
+    {
+        return domain::Result<void>::failure(*recoveryError_);
     }
 
     QFile file(lockPath_);
     if (!file.open(QIODevice::ReadOnly))
     {
-        const auto error = lockError(
+        auto error = lockError(
             domain::ErrorCode::ProjectLockOwnershipLost,
             QStringLiteral("Corax could not verify its project writer lock."),
-            file.errorString(),
+            QStringLiteral("The writer lock for project %1 could not be read: %2")
+                .arg(projectId_.toString(QUuid::WithoutBraces), file.errorString()),
             lockPath_,
             QStringLiteral(
                 "Verify that no other writer owns this project before changing the lock file."));
-        lockPath_.clear();
-        ownershipToken_.clear();
-        projectId_ = {};
+        markOwnershipLost(error);
         return domain::Result<void>::failure(error);
     }
 
@@ -196,15 +208,19 @@ domain::Result<void> ProjectWriterLock::release()
         object.value(QStringLiteral("ownershipToken")).toString() == ownershipToken_;
     if (!matches)
     {
-        const auto error = lockError(
+        const QString observedProjectId =
+            object.value(QStringLiteral("projectId")).toString(QStringLiteral("unavailable"));
+        auto error = lockError(
             domain::ErrorCode::ProjectLockOwnershipLost,
             QStringLiteral("Corax no longer owns the project writer lock."),
-            QStringLiteral("The on-disk lock token or project ID changed after acquisition."),
+            QStringLiteral("The on-disk lock token or project ID changed after acquisition. "
+                           "Expected project ID %1; observed project ID %2; parse status: %3.")
+                .arg(projectId_.toString(QUuid::WithoutBraces),
+                     observedProjectId,
+                     parseError.errorString()),
             lockPath_,
             QStringLiteral("Verify the active writer before changing the lock file."));
-        lockPath_.clear();
-        ownershipToken_.clear();
-        projectId_ = {};
+        markOwnershipLost(error);
         return domain::Result<void>::failure(error);
     }
 
@@ -219,10 +235,34 @@ domain::Result<void> ProjectWriterLock::release()
             true));
     }
 
+    clearLocalState();
+    return domain::Result<void>::success();
+}
+
+void ProjectWriterLock::abandon() noexcept
+{
+    clearLocalState();
+}
+
+std::optional<domain::AppError> ProjectWriterLock::recoveryError() const
+{
+    return recoveryError_;
+}
+
+void ProjectWriterLock::markOwnershipLost(domain::AppError error)
+{
+    state_ = State::OwnershipLost;
+    ownershipToken_.clear();
+    recoveryError_ = std::move(error);
+}
+
+void ProjectWriterLock::clearLocalState() noexcept
+{
+    state_ = State::Unowned;
     lockPath_.clear();
     ownershipToken_.clear();
     projectId_ = {};
-    return domain::Result<void>::success();
+    recoveryError_.reset();
 }
 
 } // namespace corax::storage_sqlite

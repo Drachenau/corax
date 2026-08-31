@@ -34,6 +34,8 @@ enum class ErrorCode
     ProjectLockOwnershipLost,
     TransactionFailed,
     InternalError,
+    ProjectOperationFailed,
+    ProjectOperationCanceled,
 };
 
 [[nodiscard]] QString errorCodeName(ErrorCode code);

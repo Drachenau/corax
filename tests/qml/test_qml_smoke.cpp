@@ -111,6 +111,19 @@ public:
         {
             throw std::runtime_error{"Injected close-store exception."};
         }
+        if (loseOwnershipOnClose_)
+        {
+            recoveryRequired_ = true;
+            return corax::domain::Result<void>::failure({
+                .code = corax::domain::ErrorCode::ProjectLockOwnershipLost,
+                .userMessage = QStringLiteral("Corax no longer owns the project writer lock."),
+                .technicalContext = QStringLiteral("Injected writer-lock ownership loss."),
+                .remediation =
+                    QStringLiteral("Verify the active writer before changing the lock file."),
+                .affectedPath = currentProject_ ? currentProject_->projectPath : QString{},
+                .retryable = false,
+            });
+        }
         currentProject_.reset();
         return corax::domain::Result<void>::success();
     }
@@ -118,6 +131,11 @@ public:
     std::optional<corax::domain::ProjectInfo> currentProject() const override
     {
         return currentProject_;
+    }
+
+    bool recoveryRequired() const noexcept override
+    {
+        return recoveryRequired_;
     }
 
     void setFailOpen(const bool fail)
@@ -131,6 +149,10 @@ public:
     void setThrowClose(const bool shouldThrow)
     {
         throwClose_ = shouldThrow;
+    }
+    void setLoseOwnershipOnClose(const bool shouldLose)
+    {
+        loseOwnershipOnClose_ = shouldLose;
     }
     [[nodiscard]] Qt::HANDLE operationThread() const noexcept
     {
@@ -159,6 +181,8 @@ private:
     bool failOpen_{false};
     bool throwOpen_{false};
     bool throwClose_{false};
+    bool loseOwnershipOnClose_{false};
+    bool recoveryRequired_{false};
 };
 
 } // namespace
@@ -172,6 +196,7 @@ private slots:
     void rejectedFakeJobSubmissionReturnsEmptyId();
     void structuredProjectErrorReachesPresentation();
     void dependencyExceptionsReachPresentation();
+    void writerLockRecoveryStateRemainsVisible();
     void structuredJobOutcomesReachLoadedQml();
 };
 
@@ -299,6 +324,59 @@ void QmlSmokeTest::dependencyExceptionsReachPresentation()
     QCOMPARE(controller.errorRemediation(),
              QStringLiteral("Restart Corax and try the operation again."));
     QVERIFY(!controller.errorRetryable());
+}
+
+void QmlSmokeTest::writerLockRecoveryStateRemainsVisible()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    FakeProjectStore store;
+    corax::application::ProjectService service{store};
+    corax::jobs::JobScheduler scheduler{1};
+    corax::presentation::ProjectController projectController{service, scheduler};
+    corax::presentation::JobsController jobsController{scheduler};
+
+    QQmlApplicationEngine engine;
+    engine.setInitialProperties({
+        {QStringLiteral("projectController"), QVariant::fromValue(&projectController)},
+        {QStringLiteral("jobsController"), QVariant::fromValue(&jobsController)},
+    });
+    engine.loadFromModule(QStringLiteral("Corax.Ui"), QStringLiteral("Main"));
+    QVERIFY(QTest::qWaitFor([&engine] { return engine.rootObjects().size() == 1; }, 3'000));
+
+    auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().constFirst());
+    QVERIFY(window != nullptr);
+
+    projectController.createProject(
+        QUrl::fromLocalFile(temporaryDirectory.filePath(QStringLiteral("Recovery.corax"))),
+        QStringLiteral("Recovery Fixture"));
+    QVERIFY(
+        QTest::qWaitFor([&projectController] { return projectController.hasProject(); }, 3'000));
+
+    store.setLoseOwnershipOnClose(true);
+    projectController.closeProject();
+    QVERIFY(QTest::qWaitFor(
+        [&projectController]
+        {
+            return projectController.recoveryRequired() && projectController.hasError() &&
+                   !projectController.busy();
+        },
+        3'000));
+    QVERIFY(projectController.hasProject());
+    QCOMPARE(projectController.errorCode(), QStringLiteral("project.lock_ownership_lost"));
+
+    QVERIFY(visualItemExists(window, QStringLiteral("recoveryRequiredBanner")));
+    auto* message =
+        findVisualItem(window->contentItem(), QStringLiteral("recoveryRequiredMessage"));
+    QVERIFY(message != nullptr);
+    QVERIFY(message->property("visible").toBool());
+    QVERIFY(message->property("text").toString().contains(QStringLiteral("recovery"),
+                                                          Qt::CaseInsensitive));
+
+    projectController.clearError();
+    QVERIFY(!projectController.hasError());
+    QVERIFY(message->property("visible").toBool());
 }
 
 void QmlSmokeTest::structuredJobOutcomesReachLoadedQml()

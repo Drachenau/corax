@@ -156,4 +156,9 @@ std::optional<domain::ProjectInfo> ProjectService::currentProject() const
     return store_.currentProject();
 }
 
+bool ProjectService::recoveryRequired() const noexcept
+{
+    return store_.recoveryRequired();
+}
+
 } // namespace corax::application
