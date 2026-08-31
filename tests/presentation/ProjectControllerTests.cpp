@@ -287,7 +287,7 @@ void ProjectControllerTests::queuedShutdownCancellationIsStructured()
     QCOMPARE(controller.hasProject(), operation == QStringLiteral("project.close"));
 
     releaseBlocker.release();
-    QTRY_COMPARE(scheduler.activeCount(), 0);
+    QVERIFY(QTest::qWaitFor([&scheduler] { return scheduler.activeCount() == 0; }, 3'000));
     QVERIFY(scheduler.waitForShutdown(3s));
 }
 
