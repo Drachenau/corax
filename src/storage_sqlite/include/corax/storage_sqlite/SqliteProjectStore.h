@@ -18,10 +18,17 @@ public:
     // operation creates or locks the project directory. Production composition
     // leaves this empty.
     using InitialPathCheckpoint = std::function<void()>;
+    // Test synchronization seam after failed-create lock ownership is verified
+    // and before owned artifacts are removed. Production composition leaves this
+    // empty.
+    using FailedCreateCleanupCheckpoint = std::function<void()>;
 
     explicit SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manifestWriter = {});
     SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manifestWriter,
                        InitialPathCheckpoint initialPathCheckpoint);
+    SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manifestWriter,
+                       InitialPathCheckpoint initialPathCheckpoint,
+                       FailedCreateCleanupCheckpoint failedCreateCleanupCheckpoint);
     ~SqliteProjectStore() override;
 
     SqliteProjectStore(const SqliteProjectStore&) = delete;

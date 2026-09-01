@@ -77,10 +77,11 @@ void removeOwnedProjectArtifacts(const QString& rootPath)
     }
 }
 
-domain::AppError lockReleaseFailure(domain::AppError operationError, domain::AppError lockError)
+domain::AppError lockFailureAfterProjectFailure(domain::AppError operationError,
+                                                domain::AppError lockError)
 {
     lockError.technicalContext =
-        QStringLiteral("%1 Writer-lock release failed after project failure %2: %3")
+        QStringLiteral("%1 Writer-lock handling failed after project failure %2: %3")
             .arg(lockError.technicalContext,
                  operationError.stableCode(),
                  operationError.technicalContext);
@@ -94,21 +95,35 @@ domain::Result<domain::ProjectInfo> projectFailureAfterLockRelease(ProjectWriter
     if (!released)
     {
         return domain::Result<domain::ProjectInfo>::failure(
-            lockReleaseFailure(std::move(operationError), std::move(released).error()));
+            lockFailureAfterProjectFailure(std::move(operationError), std::move(released).error()));
     }
     return domain::Result<domain::ProjectInfo>::failure(std::move(operationError));
 }
 
-domain::Result<domain::ProjectInfo> projectFailureAfterLockReleaseAndCleanup(
-    ProjectWriterLock& writerLock, const QString& rootPath, domain::AppError operationError)
+domain::Result<domain::ProjectInfo> projectFailureAfterLockVerifiedCleanupAndRelease(
+    ProjectWriterLock& writerLock,
+    const QString& rootPath,
+    domain::AppError operationError,
+    const SqliteProjectStore::FailedCreateCleanupCheckpoint& cleanupCheckpoint)
 {
+    auto verified = writerLock.verifyOwnership();
+    if (!verified)
+    {
+        return domain::Result<domain::ProjectInfo>::failure(
+            lockFailureAfterProjectFailure(std::move(operationError), std::move(verified).error()));
+    }
+    if (cleanupCheckpoint)
+    {
+        cleanupCheckpoint();
+    }
+    removeOwnedProjectArtifacts(rootPath);
+
     auto released = writerLock.release();
     if (!released)
     {
         return domain::Result<domain::ProjectInfo>::failure(
-            lockReleaseFailure(std::move(operationError), std::move(released).error()));
+            lockFailureAfterProjectFailure(std::move(operationError), std::move(released).error()));
     }
-    removeOwnedProjectArtifacts(rootPath);
     return domain::Result<domain::ProjectInfo>::failure(std::move(operationError));
 }
 
@@ -117,8 +132,11 @@ domain::Result<domain::ProjectInfo> projectFailureAfterLockReleaseAndCleanup(
 class SqliteProjectStore::Impl final
 {
 public:
-    Impl(std::shared_ptr<IAtomicFileWriter> writer, InitialPathCheckpoint pathCheckpoint)
-        : manifests(std::move(writer)), initialPathCheckpoint(std::move(pathCheckpoint))
+    Impl(std::shared_ptr<IAtomicFileWriter> writer,
+         InitialPathCheckpoint pathCheckpoint,
+         FailedCreateCleanupCheckpoint cleanupCheckpoint)
+        : manifests(std::move(writer)), initialPathCheckpoint(std::move(pathCheckpoint)),
+          failedCreateCleanupCheckpoint(std::move(cleanupCheckpoint))
     {
     }
 
@@ -126,16 +144,26 @@ public:
     ProjectWriterLock writerLock;
     std::optional<domain::ProjectInfo> current;
     InitialPathCheckpoint initialPathCheckpoint;
+    FailedCreateCleanupCheckpoint failedCreateCleanupCheckpoint;
 };
 
 SqliteProjectStore::SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manifestWriter)
-    : SqliteProjectStore(std::move(manifestWriter), {})
+    : SqliteProjectStore(std::move(manifestWriter), {}, {})
 {
 }
 
 SqliteProjectStore::SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manifestWriter,
                                        InitialPathCheckpoint initialPathCheckpoint)
-    : impl_(std::make_unique<Impl>(std::move(manifestWriter), std::move(initialPathCheckpoint)))
+    : SqliteProjectStore(std::move(manifestWriter), std::move(initialPathCheckpoint), {})
+{
+}
+
+SqliteProjectStore::SqliteProjectStore(std::shared_ptr<IAtomicFileWriter> manifestWriter,
+                                       InitialPathCheckpoint initialPathCheckpoint,
+                                       FailedCreateCleanupCheckpoint failedCreateCleanupCheckpoint)
+    : impl_(std::make_unique<Impl>(std::move(manifestWriter),
+                                   std::move(initialPathCheckpoint),
+                                   std::move(failedCreateCleanupCheckpoint)))
 {
 }
 
@@ -278,7 +306,7 @@ SqliteProjectStore::createProject(const application::NewProject& project)
     {
         if (!root.mkpath(QString::fromLatin1(relativePath)))
         {
-            return projectFailureAfterLockReleaseAndCleanup(
+            return projectFailureAfterLockVerifiedCleanupAndRelease(
                 impl_->writerLock,
                 rootPath,
                 projectError(
@@ -288,7 +316,8 @@ SqliteProjectStore::createProject(const application::NewProject& project)
                         .arg(QString::fromLatin1(relativePath)),
                     rootPath,
                     QStringLiteral("Check directory permissions and available disk space."),
-                    true));
+                    true),
+                impl_->failedCreateCleanupCheckpoint);
         }
     }
 
@@ -305,8 +334,11 @@ SqliteProjectStore::createProject(const application::NewProject& project)
     if (!manifestWritten)
     {
         auto operationError = std::move(manifestWritten).error();
-        return projectFailureAfterLockReleaseAndCleanup(
-            impl_->writerLock, rootPath, std::move(operationError));
+        return projectFailureAfterLockVerifiedCleanupAndRelease(
+            impl_->writerLock,
+            rootPath,
+            std::move(operationError),
+            impl_->failedCreateCleanupCheckpoint);
     }
 
     const domain::ProjectInfo initialInfo{
@@ -321,8 +353,11 @@ SqliteProjectStore::createProject(const application::NewProject& project)
     if (!initialized)
     {
         auto operationError = std::move(initialized).error();
-        return projectFailureAfterLockReleaseAndCleanup(
-            impl_->writerLock, rootPath, std::move(operationError));
+        return projectFailureAfterLockVerifiedCleanupAndRelease(
+            impl_->writerLock,
+            rootPath,
+            std::move(operationError),
+            impl_->failedCreateCleanupCheckpoint);
     }
 
     auto database = std::move(initialized).value();
@@ -331,8 +366,11 @@ SqliteProjectStore::createProject(const application::NewProject& project)
     {
         auto operationError = std::move(storedInfo).error();
         database.reset();
-        return projectFailureAfterLockReleaseAndCleanup(
-            impl_->writerLock, rootPath, std::move(operationError));
+        return projectFailureAfterLockVerifiedCleanupAndRelease(
+            impl_->writerLock,
+            rootPath,
+            std::move(operationError),
+            impl_->failedCreateCleanupCheckpoint);
     }
     database.reset();
 
