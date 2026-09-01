@@ -2,6 +2,8 @@
 
 #include "corax/storage_sqlite/ProjectManifest.h"
 
+#include <corax/build/BuildConfiguration.h>
+
 #include "corax/domain/AppError.h"
 
 #include <QFile>
@@ -20,7 +22,11 @@ namespace
 {
 
 constexpr qint64 kMaximumManifestBytes = 1024 * 1024;
-const QVersionNumber kCurrentCoraxVersion(0, 1, 0);
+
+QVersionNumber currentCoraxVersion()
+{
+    return QVersionNumber::fromString(QString::fromLatin1(build::kApplicationVersion));
+}
 
 bool parseCanonicalVersion(const QString& text, QVersionNumber& version)
 {
@@ -71,7 +77,7 @@ bool ProjectManifest::isValid() const
     return !projectId.isNull() && !displayName.trimmed().isEmpty() && displayName.size() <= 256 &&
            databaseFile == QString::fromLatin1(kDatabaseFileName) && createdAtUtc.isValid() &&
            parseCanonicalVersion(minimumCoraxVersion, minimumVersion) &&
-           minimumVersion <= kCurrentCoraxVersion && sourceRootsAreSupported;
+           minimumVersion <= currentCoraxVersion() && sourceRootsAreSupported;
 }
 
 domain::Result<void> QSaveFileWriter::writeAtomically(const QString& path,
@@ -317,13 +323,14 @@ domain::Result<ProjectManifest> ManifestStore::parse(const QByteArray& contents,
             QStringLiteral("minimumCoraxVersion must be a canonical three-part numeric version."),
             sourcePath));
     }
-    if (parsedMinimumVersion > kCurrentCoraxVersion)
+    const QVersionNumber applicationVersion = currentCoraxVersion();
+    if (parsedMinimumVersion > applicationVersion)
     {
         return domain::Result<ProjectManifest>::failure(
             manifestError(domain::ErrorCode::ManifestVersionUnsupported,
                           QStringLiteral("This project needs a newer Corax version."),
                           QStringLiteral("minimumCoraxVersion is %1; this build is %2.")
-                              .arg(minimumVersion, kCurrentCoraxVersion.toString()),
+                              .arg(minimumVersion, applicationVersion.toString()),
                           sourcePath,
                           QStringLiteral("Update Corax before opening this project.")));
     }

@@ -12,7 +12,11 @@
       "generator": "Ninja",
       "cacheVariables": {
         "BUILD_TESTING": "ON",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": {
+          "type": "STRING",
+          "value": "12.0"
+        }
       }
     },
     {

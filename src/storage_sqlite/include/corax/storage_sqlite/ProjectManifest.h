@@ -24,7 +24,7 @@ struct ProjectManifest final
     QString displayName;
     QString databaseFile{QString::fromLatin1(kDatabaseFileName)};
     QDateTime createdAtUtc;
-    QString minimumCoraxVersion{QStringLiteral("0.1.0")};
+    QString minimumCoraxVersion;
     QJsonObject preservedFields;
 
     [[nodiscard]] bool isValid() const;

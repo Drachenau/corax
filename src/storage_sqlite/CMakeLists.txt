@@ -24,6 +24,7 @@ target_link_libraries(corax_storage_sqlite
         corax_domain
         Qt6::Core
     PRIVATE
+        Corax::BuildConfig
         corax_sqlite
 )
 

@@ -2,6 +2,8 @@
 
 #include "corax/storage_sqlite/ProjectWriterLock.h"
 
+#include <corax/build/BuildConfiguration.h>
+
 #include "corax/domain/AppError.h"
 
 #include <QCoreApplication>
@@ -135,7 +137,7 @@ domain::Result<void> ProjectWriterLock::acquire(const QString& projectDirectory,
     QString version = QCoreApplication::applicationVersion();
     if (version.isEmpty())
     {
-        version = QStringLiteral("0.1.0");
+        version = QString::fromLatin1(build::kApplicationVersion);
     }
 
     const QJsonObject object{

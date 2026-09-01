@@ -2,6 +2,8 @@
 
 #include "corax/storage_sqlite/SqliteProjectStore.h"
 
+#include <corax/build/BuildConfiguration.h>
+
 #include "corax/domain/AppError.h"
 #include "corax/storage_sqlite/ProjectWriterLock.h"
 #include "corax/storage_sqlite/SqliteProjectDatabase.h"
@@ -295,7 +297,7 @@ SqliteProjectStore::createProject(const application::NewProject& project)
         .displayName = project.displayName.trimmed(),
         .databaseFile = QString::fromLatin1(kDatabaseFileName),
         .createdAtUtc = project.createdAtUtc.toUTC(),
-        .minimumCoraxVersion = QStringLiteral("0.1.0"),
+        .minimumCoraxVersion = QString::fromLatin1(build::kApplicationVersion),
         .preservedFields = {},
     };
     const QString manifestPath = root.filePath(QString::fromLatin1(kManifestFileName));

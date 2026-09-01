@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+
+#pragma once
+
+namespace corax::build
+{
+
+inline constexpr auto kApplicationVersion = "@PROJECT_VERSION@";
+inline constexpr auto kApplicationDisplayName = "@CORAX_APPLICATION_DISPLAY_NAME@";
+inline constexpr auto kOrganizationName = "@CORAX_ORGANIZATION_NAME@";
+inline constexpr auto kOrganizationDomain = "@CORAX_ORGANIZATION_DOMAIN@";
+inline constexpr auto kApplicationIdentifier = "@CORAX_APPLICATION_IDENTIFIER@";
+
+} // namespace corax::build
