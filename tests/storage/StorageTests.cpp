@@ -17,6 +17,7 @@
 #include <QTest>
 #include <QThread>
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -40,6 +41,29 @@ using corax::storage_sqlite::SqliteProjectStore;
 constexpr auto kFixtureIdText = "12345678-90ab-4cde-8fab-1234567890ab";
 constexpr auto kOtherIdText = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 constexpr auto kFixtureTimeText = "2026-08-30T15:16:17.123Z";
+constexpr std::array kRequiredProjectDirectories{
+    "managed/originals",
+    "annotations/masks",
+    "reports/imports",
+    "reports/exports",
+    "backups",
+    "cache/thumbnails",
+    "cache/previews",
+    "cache/analysis",
+    "tmp",
+};
+
+bool writeNewFile(const QString& path, const QByteArray& contents)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly))
+    {
+        return false;
+    }
+    const bool written = file.write(contents) == contents.size();
+    file.close();
+    return written;
+}
 
 QDateTime fixtureTime()
 {
@@ -94,36 +118,122 @@ public:
     int calls{0};
 };
 
-class LockTamperingAtomicWriter final : public IAtomicFileWriter
+class ArtifactCreatingFailingAtomicWriter final : public IAtomicFileWriter
 {
 public:
-    Result<void> writeAtomically(const QString& path, const QByteArray&) override
+    Result<void> writeAtomically(const QString& path, const QByteArray& contents) override
     {
         ++calls;
-        lockPath = QFileInfo(path).dir().filePath(QStringLiteral(".corax.writer.lock"));
-        const QJsonObject replacement{
-            {QStringLiteral("format"), QStringLiteral("org.corax.writer-lock")},
-            {QStringLiteral("formatVersion"), 1},
-            {QStringLiteral("projectId"), QString::fromLatin1(kOtherIdText)},
-            {QStringLiteral("ownershipToken"), QStringLiteral("replacement-token")},
-        };
-        replacementContents = QJsonDocument(replacement).toJson(QJsonDocument::Compact) + '\n';
+        const QDir projectDirectory = QFileInfo(path).dir();
+        manifestPath = path;
+        manifestContents = contents;
+        manifestWritten = writeNewFile(path, contents);
+        databasePath = projectDirectory.filePath(QStringLiteral("project.sqlite3"));
+        walPath = databasePath + QStringLiteral("-wal");
+        shmPath = databasePath + QStringLiteral("-shm");
+        databaseWritten = writeNewFile(databasePath, databaseContents);
+        walWritten = writeNewFile(walPath, walContents);
+        shmWritten = writeNewFile(shmPath, shmContents);
+
+        return Result<void>::failure({
+            .code = ErrorCode::ManifestWriteFailed,
+            .userMessage = QStringLiteral("Injected failure after creating project artifacts."),
+            .technicalContext = QStringLiteral("The test writer left cleanup fixtures on disk."),
+            .remediation = QStringLiteral("Use the real atomic writer."),
+            .affectedPath = path,
+            .retryable = true,
+        });
+    }
+
+    int calls{0};
+    QString manifestPath;
+    QByteArray manifestContents;
+    QString databasePath;
+    QString walPath;
+    QString shmPath;
+    const QByteArray databaseContents{QByteArrayLiteral("database-fixture\n")};
+    const QByteArray walContents{QByteArrayLiteral("wal-fixture\n")};
+    const QByteArray shmContents{QByteArrayLiteral("shm-fixture\n")};
+    bool manifestWritten{false};
+    bool databaseWritten{false};
+    bool walWritten{false};
+    bool shmWritten{false};
+};
+
+class FailedCreateLockTamperingWriter final : public IAtomicFileWriter
+{
+public:
+    explicit FailedCreateLockTamperingWriter(QString tamperMode)
+        : tamperMode_(std::move(tamperMode))
+    {
+    }
+
+    Result<void> writeAtomically(const QString& path, const QByteArray& contents) override
+    {
+        ++calls;
+        const QDir projectDirectory = QFileInfo(path).dir();
+        lockPath = projectDirectory.filePath(QStringLiteral(".corax.writer.lock"));
+
         QFile lock(lockPath);
-        if (lock.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        if (lock.open(QIODevice::ReadOnly))
         {
-            replacementLockWritten = lock.write(replacementContents) == replacementContents.size();
+            acquiredLockContents = lock.readAll();
             lock.close();
         }
 
         projectArtifactPath = path;
-        projectArtifactContents = QByteArrayLiteral("replacement-owner-project-artifact\n");
-        QFile projectArtifact(projectArtifactPath);
-        if (projectArtifact.open(QIODevice::WriteOnly | QIODevice::NewOnly))
+        projectArtifactContents = contents;
+        replacementProjectArtifactWritten =
+            writeNewFile(projectArtifactPath, projectArtifactContents);
+        databasePath = projectDirectory.filePath(QStringLiteral("project.sqlite3"));
+        walPath = databasePath + QStringLiteral("-wal");
+        shmPath = databasePath + QStringLiteral("-shm");
+        databaseWritten = writeNewFile(databasePath, databaseContents);
+        walWritten = writeNewFile(walPath, walContents);
+        shmWritten = writeNewFile(shmPath, shmContents);
+
+        if (tamperMode_ == QStringLiteral("missing"))
         {
-            replacementProjectArtifactWritten =
-                projectArtifact.write(projectArtifactContents) == projectArtifactContents.size();
-            projectArtifact.close();
+            replacementApplied = QFile::remove(lockPath);
         }
+        else if (tamperMode_ == QStringLiteral("unreadable"))
+        {
+            replacementApplied = QFile::remove(lockPath) && QDir().mkdir(lockPath);
+        }
+        else
+        {
+            if (tamperMode_ == QStringLiteral("malformed"))
+            {
+                replacementContents = QByteArrayLiteral("not-json");
+            }
+            else if (tamperMode_ == QStringLiteral("oversized"))
+            {
+                replacementContents = QByteArray(64 * 1024 + 1, 'x');
+            }
+            else
+            {
+                QJsonObject replacement = QJsonDocument::fromJson(acquiredLockContents).object();
+                if (tamperMode_ == QStringLiteral("project-id"))
+                {
+                    replacement.insert(QStringLiteral("projectId"),
+                                       QString::fromLatin1(kOtherIdText));
+                }
+                else
+                {
+                    replacement.insert(QStringLiteral("ownershipToken"),
+                                       QStringLiteral("replacement-token"));
+                }
+                replacementContents =
+                    QJsonDocument(replacement).toJson(QJsonDocument::Compact) + '\n';
+            }
+
+            if (lock.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            {
+                replacementApplied = lock.write(replacementContents) == replacementContents.size();
+                lock.close();
+            }
+        }
+
         return Result<void>::failure({
             .code = ErrorCode::ManifestWriteFailed,
             .userMessage = QStringLiteral("Injected manifest failure after lock replacement."),
@@ -137,10 +247,23 @@ public:
     int calls{0};
     QString lockPath;
     QByteArray replacementContents;
+    QByteArray acquiredLockContents;
     QString projectArtifactPath;
     QByteArray projectArtifactContents;
-    bool replacementLockWritten{false};
+    QString databasePath;
+    QString walPath;
+    QString shmPath;
+    const QByteArray databaseContents{QByteArrayLiteral("replacement-database\n")};
+    const QByteArray walContents{QByteArrayLiteral("replacement-wal\n")};
+    const QByteArray shmContents{QByteArrayLiteral("replacement-shm\n")};
+    bool replacementApplied{false};
     bool replacementProjectArtifactWritten{false};
+    bool databaseWritten{false};
+    bool walWritten{false};
+    bool shmWritten{false};
+
+private:
+    QString tamperMode_;
 };
 
 class FailBeforeMigrationCommit final : public ISqliteInitializationFaultInjector
@@ -814,6 +937,24 @@ private slots:
         QVERIFY(QFile::remove(lockPath));
     }
 
+    void writerLockOwnershipVerificationIsNonDestructive()
+    {
+        QTemporaryDir projectDirectory;
+        QVERIFY(projectDirectory.isValid());
+        ProjectWriterLock lock;
+        QVERIFY(lock.acquire(projectDirectory.path(), QUuid(QString::fromLatin1(kFixtureIdText))));
+        const QString lockPath = lock.lockPath();
+
+        QVERIFY(lock.verifyOwnership());
+        QVERIFY(lock.ownsLock());
+        QVERIFY(QFile::exists(lockPath));
+        QVERIFY(lock.verifyOwnership());
+        QVERIFY(QFile::exists(lockPath));
+
+        QVERIFY(lock.release());
+        QVERIFY(!QFile::exists(lockPath));
+    }
+
     void writerLockTamperingPreservesReplacement_data()
     {
         QTest::addColumn<QString>("field");
@@ -1029,15 +1170,205 @@ private slots:
         }
     }
 
-    void createCleanupPrioritizesWriterLockOwnershipLoss()
+    void competingStoreIsExcludedThroughoutFailedCreateCleanup()
     {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        const QString projectPath =
+            temporaryDirectory.filePath(QStringLiteral("CleanupExclusion.corax"));
+        auto writer = std::make_shared<ArtifactCreatingFailingAtomicWriter>();
+        QSemaphore cleanupPaused;
+        QSemaphore continueCleanup;
+        std::optional<Result<ProjectInfo>> failedCreate;
+        bool recoveryRequiredAfterFailure = true;
+
+        auto firstThread = std::unique_ptr<QThread>(QThread::create(
+            [&]
+            {
+                SqliteProjectStore store(writer,
+                                         {},
+                                         [&]
+                                         {
+                                             cleanupPaused.release();
+                                             continueCleanup.acquire();
+                                         });
+                ProjectService service(
+                    store,
+                    [] { return QUuid(QString::fromLatin1(kFixtureIdText)); },
+                    [] { return fixtureTime(); });
+                failedCreate.emplace(
+                    service.createProject(projectPath, QStringLiteral("Cleanup Exclusion")));
+                recoveryRequiredAfterFailure = store.recoveryRequired();
+            }));
+        firstThread->start();
+
+        const bool reachedCleanup = cleanupPaused.tryAcquire(1, 10'000);
+        std::optional<Result<ProjectInfo>> contention;
+        bool lockPresentWhilePaused = false;
+        bool manifestPresentWhilePaused = false;
+        bool databasePresentWhilePaused = false;
+        SqliteProjectStore competingStore;
+        ProjectService competing(
+            competingStore,
+            [] { return QUuid(QString::fromLatin1(kOtherIdText)); },
+            [] { return fixtureTime(); });
+        if (reachedCleanup)
+        {
+            const QDir projectDirectory(projectPath);
+            lockPresentWhilePaused =
+                QFile::exists(projectDirectory.filePath(QStringLiteral(".corax.writer.lock")));
+            manifestPresentWhilePaused =
+                QFile::exists(projectDirectory.filePath(QStringLiteral("corax.project.json")));
+            databasePresentWhilePaused =
+                QFile::exists(projectDirectory.filePath(QStringLiteral("project.sqlite3")));
+            contention.emplace(competing.openProject(projectPath));
+        }
+
+        continueCleanup.release();
+        const bool firstFinished = firstThread->wait(10'000);
+
+        QVERIFY(reachedCleanup);
+        QVERIFY(firstFinished);
+        QVERIFY(lockPresentWhilePaused);
+        QVERIFY(manifestPresentWhilePaused);
+        QVERIFY(databasePresentWhilePaused);
+        QVERIFY(contention.has_value());
+        if (!contention.has_value())
+        {
+            return;
+        }
+        QVERIFY(!contention->hasValue());
+        QCOMPARE(contention->error().stableCode(), QStringLiteral("project.locked"));
+        QVERIFY(failedCreate.has_value());
+        if (!failedCreate.has_value())
+        {
+            return;
+        }
+        QVERIFY(!failedCreate->hasValue());
+        QCOMPARE(failedCreate->error().stableCode(), QStringLiteral("manifest.write_failed"));
+        QVERIFY(!recoveryRequiredAfterFailure);
+
+        const QDir cleanedProjectDirectory(projectPath);
+        QVERIFY(cleanedProjectDirectory.exists());
+        QVERIFY(
+            cleanedProjectDirectory
+                .entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
+                .isEmpty());
+
+        auto acquiredAfterCleanup =
+            competing.createProject(projectPath, QStringLiteral("Writer After Cleanup"));
+        QVERIFY2(acquiredAfterCleanup,
+                 qPrintable(acquiredAfterCleanup ? QString{}
+                                                 : acquiredAfterCleanup.error().technicalContext));
+        QVERIFY(competing.closeProject());
+    }
+
+    void cleanupCheckpointOwnershipLossPreservesAllArtifacts()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        const QString projectPath =
+            temporaryDirectory.filePath(QStringLiteral("CheckpointOwnershipLoss.corax"));
+        auto writer = std::make_shared<ArtifactCreatingFailingAtomicWriter>();
+        const QString lockPath = QDir(projectPath).filePath(QStringLiteral(".corax.writer.lock"));
+        QByteArray replacementLockContents;
+        bool replacementWritten = false;
+        SqliteProjectStore store(
+            writer,
+            {},
+            [&]
+            {
+                QFile lock(lockPath);
+                if (!lock.open(QIODevice::ReadOnly))
+                {
+                    return;
+                }
+                QJsonObject replacement = QJsonDocument::fromJson(lock.readAll()).object();
+                lock.close();
+                replacement.insert(QStringLiteral("ownershipToken"),
+                                   QStringLiteral("checkpoint-replacement-token"));
+                replacementLockContents =
+                    QJsonDocument(replacement).toJson(QJsonDocument::Compact) + '\n';
+                if (!lock.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                {
+                    return;
+                }
+                replacementWritten =
+                    lock.write(replacementLockContents) == replacementLockContents.size();
+                lock.close();
+            });
+        ProjectService service(
+            store,
+            [] { return QUuid(QString::fromLatin1(kFixtureIdText)); },
+            [] { return fixtureTime(); });
+
+        auto created =
+            service.createProject(projectPath, QStringLiteral("Checkpoint Ownership Loss"));
+
+        QVERIFY(!created);
+        QCOMPARE(created.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
+        QVERIFY(created.error().technicalContext.contains(QStringLiteral("manifest.write_failed")));
+        QVERIFY(replacementWritten);
+        QVERIFY(store.recoveryRequired());
+        QVERIFY(!store.currentProject().has_value());
+
+        QFile replacementLock(lockPath);
+        QVERIFY(replacementLock.open(QIODevice::ReadOnly));
+        QCOMPARE(replacementLock.readAll(), replacementLockContents);
+        replacementLock.close();
+
+        QFile manifest(writer->manifestPath);
+        QVERIFY(manifest.open(QIODevice::ReadOnly));
+        QCOMPARE(manifest.readAll(), writer->manifestContents);
+        manifest.close();
+        QFile database(writer->databasePath);
+        QVERIFY(database.open(QIODevice::ReadOnly));
+        QCOMPARE(database.readAll(), writer->databaseContents);
+        database.close();
+        QFile wal(writer->walPath);
+        QVERIFY(wal.open(QIODevice::ReadOnly));
+        QCOMPARE(wal.readAll(), writer->walContents);
+        wal.close();
+        QFile shm(writer->shmPath);
+        QVERIFY(shm.open(QIODevice::ReadOnly));
+        QCOMPARE(shm.readAll(), writer->shmContents);
+        shm.close();
+        for (const char* relativePath : kRequiredProjectDirectories)
+        {
+            QVERIFY(QDir(QDir(projectPath).filePath(QString::fromLatin1(relativePath))).exists());
+        }
+
+        auto repeatedRelease = store.closeProject();
+        QVERIFY(!repeatedRelease);
+        QCOMPARE(repeatedRelease.error().stableCode(),
+                 QStringLiteral("project.lock_ownership_lost"));
+        QVERIFY(QFile::exists(lockPath));
+        QVERIFY(QFile::exists(writer->databasePath));
+        QVERIFY(QFile::exists(writer->walPath));
+        QVERIFY(QFile::exists(writer->shmPath));
+    }
+
+    void createCleanupSkipsArtifactsAfterOwnershipLoss_data()
+    {
+        QTest::addColumn<QString>("tamperMode");
+
+        QTest::newRow("ownership-token") << QStringLiteral("ownership-token");
+        QTest::newRow("project-id") << QStringLiteral("project-id");
+        QTest::newRow("malformed") << QStringLiteral("malformed");
+        QTest::newRow("missing") << QStringLiteral("missing");
+        QTest::newRow("unreadable") << QStringLiteral("unreadable");
+    }
+
+    void createCleanupSkipsArtifactsAfterOwnershipLoss()
+    {
+        QFETCH(QString, tamperMode);
         QTemporaryDir temporaryDirectory;
         QVERIFY(temporaryDirectory.isValid());
         const QString projectPath =
             temporaryDirectory.filePath(QStringLiteral("CleanupOwnershipLoss.corax"));
         const QString blockedPath =
             temporaryDirectory.filePath(QStringLiteral("BlockedAfterCleanup.corax"));
-        auto writer = std::make_shared<LockTamperingAtomicWriter>();
+        auto writer = std::make_shared<FailedCreateLockTamperingWriter>(tamperMode);
         SqliteProjectStore store(writer);
         ProjectService service(
             store,
@@ -1051,39 +1382,118 @@ private slots:
         QVERIFY(created.error().technicalContext.contains(
             QStringLiteral("The test replaced the lock before cleanup.")));
         QCOMPARE(writer->calls, 1);
-        QVERIFY(writer->replacementLockWritten);
+        QVERIFY(writer->replacementApplied);
         QVERIFY(writer->replacementProjectArtifactWritten);
+        QVERIFY(writer->databaseWritten);
+        QVERIFY(writer->walWritten);
+        QVERIFY(writer->shmWritten);
         QVERIFY(store.recoveryRequired());
         QVERIFY(!store.currentProject().has_value());
 
-        QFile replacement(writer->lockPath);
-        QVERIFY(replacement.open(QIODevice::ReadOnly));
-        QCOMPARE(replacement.readAll(), writer->replacementContents);
-        replacement.close();
+        if (tamperMode == QStringLiteral("missing"))
+        {
+            QVERIFY(!QFileInfo::exists(writer->lockPath));
+        }
+        else if (tamperMode == QStringLiteral("unreadable"))
+        {
+            const QFileInfo replacementInfo(writer->lockPath);
+            QVERIFY(replacementInfo.exists());
+            QVERIFY(replacementInfo.isDir());
+        }
+        else
+        {
+            QFile replacement(writer->lockPath);
+            QVERIFY(replacement.open(QIODevice::ReadOnly));
+            QCOMPARE(replacement.readAll(), writer->replacementContents);
+            replacement.close();
+        }
 
         QFile replacementProjectArtifact(writer->projectArtifactPath);
         QVERIFY(replacementProjectArtifact.open(QIODevice::ReadOnly));
         QCOMPARE(replacementProjectArtifact.readAll(), writer->projectArtifactContents);
         replacementProjectArtifact.close();
+        QFile database(writer->databasePath);
+        QVERIFY(database.open(QIODevice::ReadOnly));
+        QCOMPARE(database.readAll(), writer->databaseContents);
+        database.close();
+        QFile wal(writer->walPath);
+        QVERIFY(wal.open(QIODevice::ReadOnly));
+        QCOMPARE(wal.readAll(), writer->walContents);
+        wal.close();
+        QFile shm(writer->shmPath);
+        QVERIFY(shm.open(QIODevice::ReadOnly));
+        QCOMPARE(shm.readAll(), writer->shmContents);
+        shm.close();
         QVERIFY(QDir(QDir(projectPath).filePath(QStringLiteral("managed/originals"))).exists());
         QVERIFY(QDir(QDir(projectPath).filePath(QStringLiteral("cache/previews"))).exists());
+
+        auto repeatedRelease = store.closeProject();
+        QVERIFY(!repeatedRelease);
+        QCOMPARE(repeatedRelease.error().stableCode(),
+                 QStringLiteral("project.lock_ownership_lost"));
+        QVERIFY(store.recoveryRequired());
 
         auto blocked = service.createProject(blockedPath, QStringLiteral("Blocked"));
         QVERIFY(!blocked);
         QCOMPARE(blocked.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
         QVERIFY(!QFileInfo::exists(blockedPath));
-        QVERIFY(QFile::exists(writer->lockPath));
+        QCOMPARE(QFileInfo::exists(writer->lockPath), tamperMode != QStringLiteral("missing"));
         QVERIFY(QFile::exists(writer->projectArtifactPath));
+        QVERIFY(QFile::exists(writer->databasePath));
+        QVERIFY(QFile::exists(writer->walPath));
+        QVERIFY(QFile::exists(writer->shmPath));
     }
 
-    void createFailureCleansArtifactsAfterSuccessfulLockRelease()
+    void oversizedLockSkipsFailedCreateCleanup()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        const QString projectPath =
+            temporaryDirectory.filePath(QStringLiteral("OversizedLock.corax"));
+        auto writer =
+            std::make_shared<FailedCreateLockTamperingWriter>(QStringLiteral("oversized"));
+        SqliteProjectStore store(writer);
+        ProjectService service(
+            store,
+            [] { return QUuid(QString::fromLatin1(kFixtureIdText)); },
+            [] { return fixtureTime(); });
+
+        auto created = service.createProject(projectPath, QStringLiteral("Oversized Lock"));
+        QVERIFY(!created);
+        QCOMPARE(created.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
+        QVERIFY(created.error().technicalContext.contains(QStringLiteral("64 KiB")));
+        QVERIFY(store.recoveryRequired());
+        QVERIFY(writer->replacementApplied);
+        QCOMPARE(QFileInfo(writer->lockPath).size(), qint64(64 * 1024 + 1));
+        QVERIFY(QFile::exists(writer->projectArtifactPath));
+        QVERIFY(QFile::exists(writer->databasePath));
+        QVERIFY(QFile::exists(writer->walPath));
+        QVERIFY(QFile::exists(writer->shmPath));
+        QVERIFY(QDir(QDir(projectPath).filePath(QStringLiteral("reports/exports"))).exists());
+
+        auto repeatedRelease = store.closeProject();
+        QVERIFY(!repeatedRelease);
+        QCOMPARE(repeatedRelease.error().stableCode(),
+                 QStringLiteral("project.lock_ownership_lost"));
+        QCOMPARE(QFileInfo(writer->lockPath).size(), qint64(64 * 1024 + 1));
+    }
+
+    void createFailureCleansArtifactsBeforeSuccessfulLockRelease()
     {
         QTemporaryDir temporaryDirectory;
         QVERIFY(temporaryDirectory.isValid());
         const QString projectPath =
             temporaryDirectory.filePath(QStringLiteral("OrdinaryCleanup.corax"));
-        auto writer = std::make_shared<FailingAtomicWriter>();
-        SqliteProjectStore store(writer);
+        auto writer = std::make_shared<ArtifactCreatingFailingAtomicWriter>();
+        bool lockPresentAtCleanupStart = false;
+        SqliteProjectStore store(
+            writer,
+            {},
+            [&]
+            {
+                lockPresentAtCleanupStart =
+                    QFile::exists(QDir(projectPath).filePath(QStringLiteral(".corax.writer.lock")));
+            });
         ProjectService service(
             store,
             [] { return QUuid(QString::fromLatin1(kFixtureIdText)); },
@@ -1093,6 +1503,11 @@ private slots:
         QVERIFY(!created);
         QCOMPARE(created.error().stableCode(), QStringLiteral("manifest.write_failed"));
         QCOMPARE(writer->calls, 1);
+        QVERIFY(writer->manifestWritten);
+        QVERIFY(writer->databaseWritten);
+        QVERIFY(writer->walWritten);
+        QVERIFY(writer->shmWritten);
+        QVERIFY(lockPresentAtCleanupStart);
         QVERIFY(!store.recoveryRequired());
         QVERIFY(!store.currentProject().has_value());
 
@@ -1101,8 +1516,12 @@ private slots:
         QVERIFY(!QFile::exists(projectDirectory.filePath(QStringLiteral(".corax.writer.lock"))));
         QVERIFY(!QFile::exists(projectDirectory.filePath(QStringLiteral("corax.project.json"))));
         QVERIFY(!QFile::exists(projectDirectory.filePath(QStringLiteral("project.sqlite3"))));
-        QVERIFY(!QDir(projectDirectory.filePath(QStringLiteral("managed/originals"))).exists());
-        QVERIFY(!QDir(projectDirectory.filePath(QStringLiteral("cache/previews"))).exists());
+        QVERIFY(!QFile::exists(projectDirectory.filePath(QStringLiteral("project.sqlite3-wal"))));
+        QVERIFY(!QFile::exists(projectDirectory.filePath(QStringLiteral("project.sqlite3-shm"))));
+        for (const char* relativePath : kRequiredProjectDirectories)
+        {
+            QVERIFY(!QDir(projectDirectory.filePath(QString::fromLatin1(relativePath))).exists());
+        }
         QVERIFY(
             projectDirectory
                 .entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)

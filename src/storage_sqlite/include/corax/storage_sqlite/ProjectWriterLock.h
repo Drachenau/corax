@@ -27,6 +27,7 @@ public:
 
     [[nodiscard]] domain::Result<void> acquire(const QString& projectDirectory,
                                                const QUuid& projectId);
+    [[nodiscard]] domain::Result<void> verifyOwnership();
     [[nodiscard]] domain::Result<void> release();
     void abandon() noexcept;
 

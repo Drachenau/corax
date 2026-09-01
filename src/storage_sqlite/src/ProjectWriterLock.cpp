@@ -21,6 +21,8 @@ namespace corax::storage_sqlite
 namespace
 {
 
+constexpr qint64 kMaximumWriterLockBytes = 64 * 1024;
+
 domain::AppError lockError(const domain::ErrorCode code,
                            QString userMessage,
                            QString technicalContext,
@@ -46,13 +48,24 @@ QString describeExistingLock(const QString& path)
         return QStringLiteral("The writer lock exists but cannot be read: %1")
             .arg(existing.errorString());
     }
-    if (existing.size() > 64 * 1024)
+    if (existing.size() > kMaximumWriterLockBytes)
+    {
+        return QStringLiteral("The writer lock exists but exceeds the 64 KiB safety limit.");
+    }
+
+    const QByteArray contents = existing.read(kMaximumWriterLockBytes);
+    if (existing.error() != QFileDevice::NoError)
+    {
+        return QStringLiteral("The writer lock exists but cannot be read: %1")
+            .arg(existing.errorString());
+    }
+    if (existing.size() > kMaximumWriterLockBytes || !existing.atEnd())
     {
         return QStringLiteral("The writer lock exists but exceeds the 64 KiB safety limit.");
     }
 
     QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(existing.readAll(), &parseError);
+    const QJsonDocument document = QJsonDocument::fromJson(contents, &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject())
     {
         return QStringLiteral("The writer lock exists but is malformed: %1")
@@ -173,11 +186,16 @@ domain::Result<void> ProjectWriterLock::acquire(const QString& projectDirectory,
     return domain::Result<void>::success();
 }
 
-domain::Result<void> ProjectWriterLock::release()
+domain::Result<void> ProjectWriterLock::verifyOwnership()
 {
     if (state_ == State::Unowned)
     {
-        return domain::Result<void>::success();
+        return domain::Result<void>::failure(
+            lockError(domain::ErrorCode::ProjectLockFailed,
+                      QStringLiteral("Corax does not own a project writer lock."),
+                      QStringLiteral("Lock ownership cannot be verified before acquisition."),
+                      lockPath_,
+                      QStringLiteral("Open or create the project before verifying its lock.")));
     }
     if (recoveryRequired())
     {
@@ -199,9 +217,55 @@ domain::Result<void> ProjectWriterLock::release()
         return domain::Result<void>::failure(error);
     }
 
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (file.size() > kMaximumWriterLockBytes)
+    {
+        file.close();
+        auto error = lockError(
+            domain::ErrorCode::ProjectLockOwnershipLost,
+            QStringLiteral("Corax could not verify its project writer lock."),
+            QStringLiteral("The writer lock for project %1 exceeds the 64 KiB safety limit.")
+                .arg(projectId_.toString(QUuid::WithoutBraces)),
+            lockPath_,
+            QStringLiteral(
+                "Verify that no other writer owns this project before changing the lock file."));
+        markOwnershipLost(error);
+        return domain::Result<void>::failure(error);
+    }
+
+    const QByteArray contents = file.read(kMaximumWriterLockBytes);
+    const auto readError = file.error();
+    const QString readErrorText = file.errorString();
+    const bool oversized = file.size() > kMaximumWriterLockBytes || !file.atEnd();
     file.close();
+    if (readError != QFileDevice::NoError)
+    {
+        auto error = lockError(
+            domain::ErrorCode::ProjectLockOwnershipLost,
+            QStringLiteral("Corax could not verify its project writer lock."),
+            QStringLiteral("The writer lock for project %1 could not be read: %2")
+                .arg(projectId_.toString(QUuid::WithoutBraces), readErrorText),
+            lockPath_,
+            QStringLiteral(
+                "Verify that no other writer owns this project before changing the lock file."));
+        markOwnershipLost(error);
+        return domain::Result<void>::failure(error);
+    }
+    if (oversized)
+    {
+        auto error = lockError(
+            domain::ErrorCode::ProjectLockOwnershipLost,
+            QStringLiteral("Corax could not verify its project writer lock."),
+            QStringLiteral("The writer lock for project %1 exceeds the 64 KiB safety limit.")
+                .arg(projectId_.toString(QUuid::WithoutBraces)),
+            lockPath_,
+            QStringLiteral(
+                "Verify that no other writer owns this project before changing the lock file."));
+        markOwnershipLost(error);
+        return domain::Result<void>::failure(error);
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(contents, &parseError);
     const QJsonObject object = document.isObject() ? document.object() : QJsonObject{};
     const bool matches =
         parseError.error == QJsonParseError::NoError &&
@@ -224,6 +288,22 @@ domain::Result<void> ProjectWriterLock::release()
             QStringLiteral("Verify the active writer before changing the lock file."));
         markOwnershipLost(error);
         return domain::Result<void>::failure(error);
+    }
+
+    return domain::Result<void>::success();
+}
+
+domain::Result<void> ProjectWriterLock::release()
+{
+    if (state_ == State::Unowned)
+    {
+        return domain::Result<void>::success();
+    }
+
+    auto verified = verifyOwnership();
+    if (!verified)
+    {
+        return verified;
     }
 
     if (!QFile::remove(lockPath_))
