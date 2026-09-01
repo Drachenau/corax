@@ -125,6 +125,8 @@ public:
     {
         ++calls;
         const QDir projectDirectory = QFileInfo(path).dir();
+        manifestPath = path;
+        manifestContents = contents;
         manifestWritten = writeNewFile(path, contents);
         databasePath = projectDirectory.filePath(QStringLiteral("project.sqlite3"));
         walPath = databasePath + QStringLiteral("-wal");
@@ -144,6 +146,8 @@ public:
     }
 
     int calls{0};
+    QString manifestPath;
+    QByteArray manifestContents;
     QString databasePath;
     QString walPath;
     QString shmPath;
@@ -1257,6 +1261,91 @@ private slots:
                  qPrintable(acquiredAfterCleanup ? QString{}
                                                  : acquiredAfterCleanup.error().technicalContext));
         QVERIFY(competing.closeProject());
+    }
+
+    void cleanupCheckpointOwnershipLossPreservesAllArtifacts()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        const QString projectPath =
+            temporaryDirectory.filePath(QStringLiteral("CheckpointOwnershipLoss.corax"));
+        auto writer = std::make_shared<ArtifactCreatingFailingAtomicWriter>();
+        const QString lockPath = QDir(projectPath).filePath(QStringLiteral(".corax.writer.lock"));
+        QByteArray replacementLockContents;
+        bool replacementWritten = false;
+        SqliteProjectStore store(
+            writer,
+            {},
+            [&]
+            {
+                QFile lock(lockPath);
+                if (!lock.open(QIODevice::ReadOnly))
+                {
+                    return;
+                }
+                QJsonObject replacement = QJsonDocument::fromJson(lock.readAll()).object();
+                lock.close();
+                replacement.insert(QStringLiteral("ownershipToken"),
+                                   QStringLiteral("checkpoint-replacement-token"));
+                replacementLockContents =
+                    QJsonDocument(replacement).toJson(QJsonDocument::Compact) + '\n';
+                if (!lock.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                {
+                    return;
+                }
+                replacementWritten =
+                    lock.write(replacementLockContents) == replacementLockContents.size();
+                lock.close();
+            });
+        ProjectService service(
+            store,
+            [] { return QUuid(QString::fromLatin1(kFixtureIdText)); },
+            [] { return fixtureTime(); });
+
+        auto created =
+            service.createProject(projectPath, QStringLiteral("Checkpoint Ownership Loss"));
+
+        QVERIFY(!created);
+        QCOMPARE(created.error().stableCode(), QStringLiteral("project.lock_ownership_lost"));
+        QVERIFY(created.error().technicalContext.contains(QStringLiteral("manifest.write_failed")));
+        QVERIFY(replacementWritten);
+        QVERIFY(store.recoveryRequired());
+        QVERIFY(!store.currentProject().has_value());
+
+        QFile replacementLock(lockPath);
+        QVERIFY(replacementLock.open(QIODevice::ReadOnly));
+        QCOMPARE(replacementLock.readAll(), replacementLockContents);
+        replacementLock.close();
+
+        QFile manifest(writer->manifestPath);
+        QVERIFY(manifest.open(QIODevice::ReadOnly));
+        QCOMPARE(manifest.readAll(), writer->manifestContents);
+        manifest.close();
+        QFile database(writer->databasePath);
+        QVERIFY(database.open(QIODevice::ReadOnly));
+        QCOMPARE(database.readAll(), writer->databaseContents);
+        database.close();
+        QFile wal(writer->walPath);
+        QVERIFY(wal.open(QIODevice::ReadOnly));
+        QCOMPARE(wal.readAll(), writer->walContents);
+        wal.close();
+        QFile shm(writer->shmPath);
+        QVERIFY(shm.open(QIODevice::ReadOnly));
+        QCOMPARE(shm.readAll(), writer->shmContents);
+        shm.close();
+        for (const char* relativePath : kRequiredProjectDirectories)
+        {
+            QVERIFY(QDir(QDir(projectPath).filePath(QString::fromLatin1(relativePath))).exists());
+        }
+
+        auto repeatedRelease = store.closeProject();
+        QVERIFY(!repeatedRelease);
+        QCOMPARE(repeatedRelease.error().stableCode(),
+                 QStringLiteral("project.lock_ownership_lost"));
+        QVERIFY(QFile::exists(lockPath));
+        QVERIFY(QFile::exists(writer->databasePath));
+        QVERIFY(QFile::exists(writer->walPath));
+        QVERIFY(QFile::exists(writer->shmPath));
     }
 
     void createCleanupSkipsArtifactsAfterOwnershipLoss_data()

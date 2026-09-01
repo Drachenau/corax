@@ -116,6 +116,12 @@ domain::Result<domain::ProjectInfo> projectFailureAfterLockVerifiedCleanupAndRel
     {
         cleanupCheckpoint();
     }
+    verified = writerLock.verifyOwnership();
+    if (!verified)
+    {
+        return domain::Result<domain::ProjectInfo>::failure(
+            lockFailureAfterProjectFailure(std::move(operationError), std::move(verified).error()));
+    }
     removeOwnedProjectArtifacts(rootPath);
 
     auto released = writerLock.release();
